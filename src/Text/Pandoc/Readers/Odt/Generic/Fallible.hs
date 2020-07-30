@@ -1,23 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
-{-
-Copyright (C) 2015 Martin Linnemann <theCodingMarlin@googlemail.com>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
 {- |
    Module      : Text.Pandoc.Readers.Odt.Generic.Fallible
    Copyright   : Copyright (C) 2015 Martin Linnemann
@@ -38,8 +18,6 @@ compatible instances of "ArrowChoice".
 
 -- We export everything
 module Text.Pandoc.Readers.Odt.Generic.Fallible where
-
-import           Data.Monoid ((<>))
 
 -- | Default for now. Will probably become a class at some point.
 type Failure = ()
@@ -90,7 +68,7 @@ collapseEither (Right (Right x)) = Right x
 -- (possibly combined) non-error. If both values represent an error, an error
 -- is returned.
 chooseMax :: (Monoid a, Monoid b) => Either a b -> Either a b -> Either a b
-chooseMax = chooseMaxWith (<>)
+chooseMax = chooseMaxWith mappend
 
 -- | If either of the values represents a non-error, the result is a
 -- (possibly combined) non-error. If both values represent an error, an error
@@ -100,7 +78,7 @@ chooseMaxWith :: (Monoid a) => (b -> b -> b)
                             -> Either a b
                             -> Either a b
 chooseMaxWith (><) (Right a) (Right b) = Right $ a >< b
-chooseMaxWith  _   (Left  a) (Left  b) = Left  $ a <> b
+chooseMaxWith  _   (Left  a) (Left  b) = Left  $ a `mappend` b
 chooseMaxWith  _   (Right a)     _     = Right a
 chooseMaxWith  _       _     (Right b) = Right b
 
@@ -121,6 +99,6 @@ newtype SuccessList a = SuccessList { collectNonFailing :: [a] }
   deriving ( Eq, Ord, Show )
 
 instance ChoiceVector SuccessList  where
-  spreadChoice = Right . SuccessList . (foldr unTagRight []) . collectNonFailing
+  spreadChoice = Right . SuccessList . foldr unTagRight [] . collectNonFailing
     where unTagRight (Right x) = (x:)
           unTagRight _         = id

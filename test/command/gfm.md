@@ -7,13 +7,30 @@ gfm tests:
 | apple | 0.13  |
 | orange|1.12|
 ^D
-[Table [] [AlignDefault,AlignRight] [0.0,0.0]
- [[Plain [Str "Fruit"]]
- ,[Plain [Str "Price"]]]
- [[[Plain [Str "apple"]]
-  ,[Plain [Str "0.13"]]]
- ,[[Plain [Str "orange"]]
-  ,[Plain [Str "1.12"]]]]]
+[Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidthDefault)
+ ,(AlignRight,ColWidthDefault)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "Fruit"]]
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "Price"]]]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "apple"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "0.13"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "orange"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "1.12"]]]])]
+ (TableFoot ("",[],[])
+ [])]
 ```
 
 ```
@@ -38,7 +55,7 @@ gfm tests:
 % pandoc -f gfm -t native
 My:thumbsup:emoji:heart:
 ^D
-[Para [Str "My\128077emoji\10084\65039"]]
+[Para [Str "My",Span ("",["emoji"],[("data-emoji","thumbsup")]) [Str "\128077"],Str "emoji",Span ("",["emoji"],[("data-emoji","heart")]) [Str "\10084\65039"]]]
 ```
 
 ```
@@ -52,21 +69,38 @@ My:thumbsup:emoji:heart:
 % pandoc -f gfm+smart -t native
 "hi"
 ^D
-[Para [Str "\8220hi\8221"]]
+[Para [Quoted DoubleQuote [Str "hi"]]]
 ```
 
 ```
 % pandoc -t gfm -f native
-[Table [Str "The",Space,Str "caption."] [AlignDefault,AlignRight] [0.0,0.0]
- [[Plain [Str "Fruit"]]
- ,[Plain [Str "Price"]]]
- [[[Plain [Str "apple"]]
-  ,[Plain [Str "0.13"]]]
- ,[[Plain [Str "orange"]]
-  ,[Plain [Str "1.12"]]]]]
+[Table ("",[],[]) (Caption Nothing
+ [Plain [Str "The",Space,Str "caption."]])
+ [(AlignDefault,ColWidthDefault)
+ ,(AlignRight,ColWidthDefault)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "Fruit"]]
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "Price"]]]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "apple"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "0.13"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "orange"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "1.12"]]]])]
+ (TableFoot ("",[],[])
+ [])]
 ^D
 | Fruit  | Price |
-| ------ | ----: |
+|--------|------:|
 | apple  |  0.13 |
 | orange |  1.12 |
 
@@ -100,4 +134,33 @@ hi
 hi
 ^D
 [Para [Str "hi",LineBreak,Str "hi"]]
+```
+
+```
+% pandoc -f gfm -t native
+- [ ] foo
+- [x] bar
+^D
+[BulletList
+ [[Plain [Str "\9744",Space,Str "foo"]]
+ ,[Plain [Str "\9746",Space,Str "bar"]]]]
+```
+
+```
+% pandoc -f gfm-task_lists -t native
+- [ ] foo
+- [x] bar
+^D
+[BulletList
+ [[Plain [Str "[",Space,Str "]",Space,Str "foo"]]
+ ,[Plain [Str "[x]",Space,Str "bar"]]]]
+```
+
+```
+% pandoc -f gfm -t gfm
+- [ ] foo
+- [x] bar
+^D
+-   [ ] foo
+-   [x] bar
 ```

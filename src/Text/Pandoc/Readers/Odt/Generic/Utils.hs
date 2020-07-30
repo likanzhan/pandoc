@@ -1,26 +1,5 @@
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE ViewPatterns  #-}
-
-{-
-Copyright (C) 2015 Martin Linnemann <theCodingMarlin@googlemail.com>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
 {- |
    Module      : Text.Pandoc.Reader.Odt.Generic.Utils
    Copyright   : Copyright (C) 2015 Martin Linnemann
@@ -40,7 +19,6 @@ module Text.Pandoc.Readers.Odt.Generic.Utils
 , uncurry6
 , swap
 , reverseComposition
-, bool
 , tryToRead
 , Lookupable(..)
 , readLookupables
@@ -51,15 +29,15 @@ module Text.Pandoc.Readers.Odt.Generic.Utils
 , composition
 ) where
 
-import           Control.Category        ( Category, (>>>), (<<<) )
-import qualified Control.Category as Cat ( id )
-import           Control.Monad           ( msum )
+import Control.Category (Category, (<<<), (>>>))
+import qualified Control.Category as Cat (id)
+import Control.Monad (msum)
 
-import qualified Data.Foldable    as F   ( Foldable, foldr )
-import           Data.Maybe
+import qualified Data.Foldable as F (Foldable, foldr)
+import Data.Maybe
 
 
--- | Aequivalent to
+-- | Equivalent to
 -- > foldr (.) id
 -- where '(.)' are 'id' are the ones from "Control.Category"
 -- and 'foldr' is the one from "Data.Foldable".
@@ -70,21 +48,13 @@ import           Data.Maybe
 composition        :: (Category cat, F.Foldable f) => f (cat a a) -> cat a a
 composition        = F.foldr (<<<) Cat.id
 
--- | Aequivalent to
+-- | Equivalent to
 -- > foldr (flip (.)) id
 -- where '(.)' are 'id' are the ones from "Control.Category"
 -- and 'foldr' is the one from "Data.Foldable".
 -- A reversed version of 'composition'.
 reverseComposition :: (Category cat, F.Foldable f) => f (cat a a) -> cat a a
 reverseComposition = F.foldr (>>>) Cat.id
-
--- | 'Either' has 'either', 'Maybe' has 'maybe'. 'Bool' should have 'bool'.
--- Note that the first value is selected if the boolean value is 'False'.
--- That makes 'bool' consistent with the other two. Also, 'bool' now takes its
--- arguments in the exact opposite order compared to the normal if construct.
-bool :: a -> a -> Bool -> a
-bool x _ False = x
-bool _ x True  = x
 
 -- | This function often makes it possible to switch values with the functions
 -- that are applied to them.
@@ -131,9 +101,7 @@ class Lookupable a where
 -- can be used directly in almost any case.
 readLookupables :: (Lookupable a) => String -> [(a,String)]
 readLookupables s = [ (a,rest) | (word,rest) <- lex s,
-                                 let result = lookup word lookupTable,
-                                 isJust result,
-                                 let Just a = result
+                                 a <- maybeToList (lookup word lookupTable)
                     ]
 
 -- | Very similar to a simple 'lookup' in the 'lookupTable', but with a lexer.

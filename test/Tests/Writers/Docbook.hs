@@ -1,6 +1,8 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Tests.Writers.Docbook (tests) where
 
+import Prelude
 import Data.Text (unpack)
 import Test.Tasty
 import Tests.Helpers
@@ -230,7 +232,7 @@ tests = [ testGroup "line blocks"
                                       ]
             ]
           ]
-        , testGroup "writer options" $
+        , testGroup "writer options"
           [ testGroup "top-level division" $
             let
               headers =  header 1 (text "header1")

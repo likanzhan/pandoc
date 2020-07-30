@@ -1,5 +1,4 @@
-Pandoc Test Suite
-=================
+= Pandoc Test Suite
 John MacFarlane; Anonymous
 July 17, 2006
 
@@ -8,50 +7,31 @@ markdown test suite.
 
 '''''
 
-[[headers]]
-Headers
--------
+== Headers
 
-[[level-2-with-an-embedded-link]]
-Level 2 with an link:/url[embedded link]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+=== Level 2 with an link:/url[embedded link]
 
-[[level-3-with-emphasis]]
-Level 3 with _emphasis_
-^^^^^^^^^^^^^^^^^^^^^^^
+==== Level 3 with _emphasis_
 
-[[level-4]]
-Level 4
-+++++++
+===== Level 4
 
-[[level-5]]
-Level 5
+====== Level 5
 
-[[level-1]]
-Level 1
--------
+== Level 1
 
-[[level-2-with-emphasis]]
-Level 2 with _emphasis_
-~~~~~~~~~~~~~~~~~~~~~~~
+=== Level 2 with _emphasis_
 
-[[level-3]]
-Level 3
-^^^^^^^
+==== Level 3
 
 with no blank line
 
-[[level-2]]
-Level 2
-~~~~~~~
+=== Level 2
 
 with no blank line
 
 '''''
 
-[[paragraphs]]
-Paragraphs
-----------
+== Paragraphs
 
 Here’s a regular paragraph.
 
@@ -66,17 +46,15 @@ here.
 
 '''''
 
-[[block-quotes]]
-Block Quotes
-------------
+== Block Quotes
 
 E-mail style:
 
-__________________________________________
+____
 This is a block quote. It is pretty short.
-__________________________________________
+____
 
-______________________
+____
 --
 Code in a block quote:
 
@@ -88,21 +66,22 @@ sub status {
 
 A list:
 
-1.  item one
-2.  item two
+[arabic]
+. item one
+. item two
 
 Nested block quotes:
 
-______
+____
 nested
-______
+____
 
-______
+____
 nested
-______
+____
 
 --
-______________________
+____
 
 This should not be a block quote: 2 > 1.
 
@@ -110,9 +89,7 @@ And a following paragraph.
 
 '''''
 
-[[code-blocks]]
-Code Blocks
------------
+== Code Blocks
 
 Code:
 
@@ -136,13 +113,9 @@ These should not be escaped:  \$ \\ \> \[ \{
 
 '''''
 
-[[lists]]
-Lists
------
+== Lists
 
-[[unordered]]
-Unordered
-~~~~~~~~~
+=== Unordered
 
 Asterisks tight:
 
@@ -180,45 +153,46 @@ Minuses loose:
 * Minus 2
 * Minus 3
 
-[[ordered]]
-Ordered
-~~~~~~~
+=== Ordered
 
 Tight:
 
-1.  First
-2.  Second
-3.  Third
+[arabic]
+. First
+. Second
+. Third
 
 and:
 
-1.  One
-2.  Two
-3.  Three
+[arabic]
+. One
+. Two
+. Three
 
 Loose using tabs:
 
-1.  First
-2.  Second
-3.  Third
+[arabic]
+. First
+. Second
+. Third
 
 and using spaces:
 
-1.  One
-2.  Two
-3.  Three
+[arabic]
+. One
+. Two
+. Three
 
 Multiple paragraphs:
 
-1.  Item 1, graf one.
+[arabic]
+. Item 1, graf one.
 +
 Item 1. graf two. The quick brown fox jumped over the lazy dog’s back.
-2.  Item 2.
-3.  Item 3.
+. Item 2.
+. Item 3.
 
-[[nested]]
-Nested
-~~~~~~
+=== Nested
 
 * Tab
 ** Tab
@@ -226,56 +200,61 @@ Nested
 
 Here’s another:
 
-1.  First
-2.  Second:
+[arabic]
+. First
+. Second:
 * Fee
 * Fie
 * Foe
-3.  Third
+. Third
 
 Same thing but with paragraphs:
 
-1.  First
-2.  Second:
+[arabic]
+. First
+. Second:
 * Fee
 * Fie
 * Foe
-3.  Third
+. Third
 
-[[tabs-and-spaces]]
-Tabs and spaces
-~~~~~~~~~~~~~~~
+=== Tabs and spaces
 
 * this is a list item indented with tabs
 * this is a list item indented with spaces
 ** this is an example list item indented with tabs
 ** this is an example list item indented with spaces
 
-[[fancy-list-markers]]
-Fancy list markers
-~~~~~~~~~~~~~~~~~~
+=== Fancy list markers
 
-1.  begins with 2
-2.  and now 3
+[arabic, start=2]
+. begins with 2
+. and now 3
 +
 with a continuation
-a.  sublist with roman numerals, starting with 4
-b.  more items
-A.  a subsublist
-B.  a subsublist
+[lowerroman, start=4]
+.. sublist with roman numerals, starting with 4
+.. more items
+[upperalpha]
+... a subsublist
+... a subsublist
 
 Nesting:
 
-A.  Upper Alpha
-A.  Upper Roman.
-1.  Decimal start with 6
-a.  Lower alpha with paren
+[upperalpha]
+. Upper Alpha
+[upperroman]
+.. Upper Roman.
+[arabic, start=6]
+... Decimal start with 6
+[loweralpha, start=3]
+.... Lower alpha with paren
 
 Autonumbering:
 
-1.  Autonumber.
-2.  More.
-1.  Nested.
+. Autonumber.
+. More.
+.. Nested.
 
 Should not be a list item:
 
@@ -285,9 +264,7 @@ B. Williams
 
 '''''
 
-[[definition-lists]]
-Definition Lists
-----------------
+== Definition Lists
 
 Tight using spaces:
 
@@ -329,9 +306,9 @@ _orange_::
 { orange code block }
 ....
   +
-  __________________
+  ____
   orange block quote
-  __________________
+  ____
 
 Multiple definitions, tight:
 
@@ -364,12 +341,11 @@ apple::
 orange::
   orange fruit
   +
-  1.  sublist
-  2.  sublist
+  [arabic]
+  . sublist
+  . sublist
 
-[[html-blocks]]
-HTML Blocks
------------
+== HTML Blocks
 
 Simple block on one line:
 
@@ -431,9 +407,7 @@ Hr’s:
 
 '''''
 
-[[inline-markup]]
-Inline Markup
--------------
+== Inline Markup
 
 This is _emphasized_, and so _is this_.
 
@@ -462,9 +436,7 @@ spaces: a^b c^d, a~b c~d.
 
 '''''
 
-[[smart-quotes-ellipses-dashes]]
-Smart quotes, ellipses, dashes
-------------------------------
+== Smart quotes, ellipses, dashes
 
 ``Hello,'' said the spider. ```Shelob' is my name.''
 
@@ -485,9 +457,7 @@ Ellipses…and…and….
 
 '''''
 
-[[latex]]
-LaTeX
------
+== LaTeX
 
 * 
 * latexmath:[$2+2=4$]
@@ -496,7 +466,11 @@ LaTeX
 * latexmath:[$223$]
 * latexmath:[$p$]-Tree
 * Here’s some display math:
-latexmath:[\[\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}\]]
++
+[latexmath]
+++++
+\[\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}\]
+++++
 * Here’s one that has a line break in it:
 latexmath:[$\alpha + \omega \times x^2$].
 
@@ -512,9 +486,7 @@ Here’s a LaTeX table:
 
 '''''
 
-[[special-characters]]
-Special Characters
-------------------
+== Special Characters
 
 Here is some unicode:
 
@@ -568,13 +540,9 @@ Minus: -
 
 '''''
 
-[[links]]
-Links
------
+== Links
 
-[[explicit]]
-Explicit
-~~~~~~~~
+=== Explicit
 
 Just a link:/url/[URL].
 
@@ -594,9 +562,7 @@ mailto:nobody@nowhere.net[Email link]
 
 link:[Empty].
 
-[[reference]]
-Reference
-~~~~~~~~~
+=== Reference
 
 Foo link:/url/[bar].
 
@@ -620,9 +586,7 @@ Foo link:/url/[bar].
 
 Foo link:/url/[biz].
 
-[[with-ampersands]]
-With ampersands
-~~~~~~~~~~~~~~~
+=== With ampersands
 
 Here’s a http://example.com/?foo=1&bar=2[link with an ampersand in the URL].
 
@@ -632,9 +596,7 @@ Here’s an link:/script?foo=1&bar=2[inline link].
 
 Here’s an link:/script?foo=1&bar=2[inline link in pointy braces].
 
-[[autolinks]]
-Autolinks
-~~~~~~~~~
+=== Autolinks
 
 With an ampersand: http://example.com/?foo=1&bar=2
 
@@ -644,9 +606,9 @@ With an ampersand: http://example.com/?foo=1&bar=2
 
 An e-mail address: nobody@nowhere.net
 
-________________________________
+____
 Blockquoted: http://example.com/
-________________________________
+____
 
 Auto-links should not occur here: `<http://example.com/>`
 
@@ -656,9 +618,7 @@ or here: <http://example.com/>
 
 '''''
 
-[[images]]
-Images
-------
+== Images
 
 From ``Voyage dans la Lune'' by Georges Melies (1902):
 
@@ -668,9 +628,7 @@ Here is a movie image:movie.jpg[movie] icon.
 
 '''''
 
-[[footnotes]]
-Footnotes
----------
+== Footnotes
 
 Here is a footnote reference,footnote:[Here is the footnote. It can go
 anywhere after the footnote reference. It need not be placed at the end of the
@@ -680,10 +638,11 @@ note.footnote:[This is _easier_ to type. Inline notes may contain
 http://google.com[links] and `]` verbatim characters, as well as [bracketed
 text].]
 
-___________________________________________
+____
 Notes can go in quotes.footnote:[In quote.]
-___________________________________________
+____
 
-1.  And in list items.footnote:[In list.]
+[arabic]
+. And in list items.footnote:[In list.]
 
 This paragraph should not be part of the note, as it is not indented.

@@ -12,25 +12,15 @@ $if(keywords)$
   <meta name="keywords" content="$for(keywords)$$keywords$$sep$, $endfor$">
 $endif$
   <title>$if(title-prefix)$$title-prefix$ – $endif$$pagetitle$</title>
-  <style type="text/css">
-      code{white-space: pre-wrap;}
-      .smallcaps{font-variant: small-caps;}
-      .column{display: inline-block;}
-$if(quotes)$
-      q { quotes: "“" "”" "‘" "’"; }
-$endif$
+  <style>
+    $styles.html()$
   </style>
-$if(highlighting-css)$
-  <style type="text/css">
-$highlighting-css$
-  </style>
-$endif$
 $if(css)$
 $for(css)$
   <link rel="stylesheet" href="$css$">
 $endfor$
 $else$
-<link href='http://fonts.googleapis.com/css?family=Oswald' rel='stylesheet'>
+<link href='https://fonts.googleapis.com/css?family=Oswald' rel='stylesheet'>
 
 <style>
   html, .view body { background-color: black; counter-reset: slideidx; }

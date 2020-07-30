@@ -8,18 +8,21 @@
   <meta name="author" content="Anonymous" />
   <meta name="dcterms.date" content="2006-07-17" />
   <title>Pandoc Test Suite</title>
-  <style type="text/css">
-      code{white-space: pre-wrap;}
-      .smallcaps{font-variant: small-caps;}
-      .line-block{white-space: pre-line;}
-      .column{display: inline-block;}
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    span.underline{text-decoration: underline;}
+    div.column{display: inline-block; vertical-align: top; width: 50%;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    ul.task-list{list-style: none;}
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
   </style>
   <!--[if lt IE 9]>
     <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv-printshiv.min.js"></script>
   <![endif]-->
 </head>
 <body>
-<header>
+<header id="title-block-header">
 <h1 class="title">Pandoc Test Suite</h1>
 <p class="author">John MacFarlane</p>
 <p class="author">Anonymous</p>
@@ -199,7 +202,7 @@ These should not be escaped:  \$ \\ \&gt; \[ \{</code></pre>
 </ul>
 <h2 id="fancy-list-markers">Fancy list markers</h2>
 <ol start="2" type="1">
-<li>begins with 2</li>
+<li><p>begins with 2</p></li>
 <li><p>and now 3</p>
 <p>with a continuation</p>
 <ol start="4" type="i">
@@ -433,7 +436,7 @@ Blah
 <li><span class="math inline"><em>α</em> ∧ <em>ω</em></span></li>
 <li><span class="math inline">223</span></li>
 <li><span class="math inline"><em>p</em></span>-Tree</li>
-<li>Here’s some display math: <br /><span class="math display">$$\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}$$</span><br /></li>
+<li>Here’s some display math: <span class="math display">$$\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}$$</span></li>
 <li>Here’s one that has a line break in it: <span class="math inline"><em>α</em> + <em>ω</em> × <em>x</em><sup>2</sup></span>.</li>
 </ul>
 <p>These shouldn’t be math:</p>
@@ -444,7 +447,6 @@ Blah
 <li>Escaped <code>$</code>: $73 <em>this should be emphasized</em> 23$.</li>
 </ul>
 <p>Here’s a LaTeX table:</p>
-
 <hr />
 <h1 id="special-characters">Special Characters</h1>
 <p>Here is some unicode:</p>
@@ -511,7 +513,7 @@ Blah
 <li><a href="http://example.com/" class="uri">http://example.com/</a></li>
 <li>It should.</li>
 </ul>
-<p>An e-mail address: <a href="mailto:nobody@nowhere.net">nobody@nowhere.net</a></p>
+<p>An e-mail address: <a href="mailto:nobody@nowhere.net" class="email">nobody@nowhere.net</a></p>
 <blockquote>
 <p>Blockquoted: <a href="http://example.com/" class="uri">http://example.com/</a></p>
 </blockquote>
@@ -521,30 +523,30 @@ Blah
 <h1 id="images">Images</h1>
 <p>From “Voyage dans la Lune” by Georges Melies (1902):</p>
 <figure>
-<img src="lalune.jpg" title="Voyage dans la Lune" alt="lalune" /><figcaption>lalune</figcaption>
+<img src="lalune.jpg" title="Voyage dans la Lune" alt="lalune" /><figcaption aria-hidden="true">lalune</figcaption>
 </figure>
 <p>Here is a movie <img src="movie.jpg" alt="movie" /> icon.</p>
 <hr />
 <h1 id="footnotes">Footnotes</h1>
-<p>Here is a footnote reference,<a href="#fn1" class="footnoteRef" id="fnref1"><sup>1</sup></a> and another.<a href="#fn2" class="footnoteRef" id="fnref2"><sup>2</sup></a> This should <em>not</em> be a footnote reference, because it contains a space.[^my note] Here is an inline note.<a href="#fn3" class="footnoteRef" id="fnref3"><sup>3</sup></a></p>
+<p>Here is a footnote reference,<a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a> and another.<a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a> This should <em>not</em> be a footnote reference, because it contains a space.[^my note] Here is an inline note.<a href="#fn3" class="footnote-ref" id="fnref3" role="doc-noteref"><sup>3</sup></a></p>
 <blockquote>
-<p>Notes can go in quotes.<a href="#fn4" class="footnoteRef" id="fnref4"><sup>4</sup></a></p>
+<p>Notes can go in quotes.<a href="#fn4" class="footnote-ref" id="fnref4" role="doc-noteref"><sup>4</sup></a></p>
 </blockquote>
 <ol type="1">
-<li>And in list items.<a href="#fn5" class="footnoteRef" id="fnref5"><sup>5</sup></a></li>
+<li>And in list items.<a href="#fn5" class="footnote-ref" id="fnref5" role="doc-noteref"><sup>5</sup></a></li>
 </ol>
 <p>This paragraph should not be part of the note, as it is not indented.</p>
-<section class="footnotes">
+<section class="footnotes" role="doc-endnotes">
 <hr />
 <ol>
-<li id="fn1"><p>Here is the footnote. It can go anywhere after the footnote reference. It need not be placed at the end of the document.<a href="#fnref1" class="footnoteBack">↩</a></p></li>
-<li id="fn2"><p>Here’s the long note. This one contains multiple blocks.</p>
+<li id="fn1" role="doc-endnote"><p>Here is the footnote. It can go anywhere after the footnote reference. It need not be placed at the end of the document.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2" role="doc-endnote"><p>Here’s the long note. This one contains multiple blocks.</p>
 <p>Subsequent blocks are indented to show that they belong to the footnote (as with list items).</p>
 <pre><code>  { &lt;code&gt; }</code></pre>
-<p>If you want, you can indent every line, but you can also be lazy and just indent the first line of each block.<a href="#fnref2" class="footnoteBack">↩</a></p></li>
-<li id="fn3"><p>This is <em>easier</em> to type. Inline notes may contain <a href="http://google.com">links</a> and <code>]</code> verbatim characters, as well as [bracketed text].<a href="#fnref3" class="footnoteBack">↩</a></p></li>
-<li id="fn4"><p>In quote.<a href="#fnref4" class="footnoteBack">↩</a></p></li>
-<li id="fn5"><p>In list.<a href="#fnref5" class="footnoteBack">↩</a></p></li>
+<p>If you want, you can indent every line, but you can also be lazy and just indent the first line of each block.<a href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn3" role="doc-endnote"><p>This is <em>easier</em> to type. Inline notes may contain <a href="http://google.com">links</a> and <code>]</code> verbatim characters, as well as [bracketed text].<a href="#fnref3" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn4" role="doc-endnote"><p>In quote.<a href="#fnref4" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn5" role="doc-endnote"><p>In list.<a href="#fnref5" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
 </ol>
 </section>
 </body>

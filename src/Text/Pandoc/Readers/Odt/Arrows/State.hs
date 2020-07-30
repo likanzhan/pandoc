@@ -1,24 +1,5 @@
-{-# LANGUAGE Arrows            #-}
-{-# LANGUAGE TupleSections     #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-
-Copyright (C) 2015 Martin Linnemann <theCodingMarlin@googlemail.com>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE TupleSections     #-}
 {- |
    Module      : Text.Pandoc.Readers.Odt.Arrows.State
    Copyright   : Copyright (C) 2015 Martin Linnemann
@@ -38,17 +19,12 @@ faster and easier to implement this way.
 
 module Text.Pandoc.Readers.Odt.Arrows.State where
 
-import Prelude hiding ( foldr, foldl )
+import Control.Arrow
+import qualified Control.Category as Cat
+import Control.Monad
 
-import qualified Control.Category                     as Cat
-import           Control.Arrow
-import           Control.Monad
-
-import           Data.Foldable
-import           Data.Monoid
-
-import           Text.Pandoc.Readers.Odt.Arrows.Utils
-import           Text.Pandoc.Readers.Odt.Generic.Fallible
+import Text.Pandoc.Readers.Odt.Arrows.Utils
+import Text.Pandoc.Readers.Odt.Generic.Fallible
 
 
 newtype ArrowState state a b = ArrowState
@@ -82,7 +58,7 @@ tryModifyState     f = ArrowState $ \(state,a)
 
 instance Cat.Category (ArrowState s) where
   id                = ArrowState id
-  arrow2 . arrow1   = ArrowState $ (runArrowState arrow2).(runArrowState arrow1)
+  arrow2 . arrow1   = ArrowState $ runArrowState arrow2 . runArrowState arrow1
 
 instance Arrow (ArrowState state) where
   arr               = ignoringState
@@ -131,7 +107,7 @@ withSubStateF' unlift a = ArrowState go
 -- and one with any function.
 foldS :: (Foldable f, Monoid m) => ArrowState s x m -> ArrowState s (f x) m
 foldS a = ArrowState $ \(s,f) -> foldr a' (s,mempty) f
-  where a' x (s',m) = second (m <>)  $ runArrowState a (s',x)
+  where a' x (s',m) = second (mappend m)  $ runArrowState a (s',x)
 
 -- | Fold a state arrow through something 'Foldable'. Collect the results in a
 -- 'MonadPlus'.
@@ -139,7 +115,7 @@ iterateS :: (Foldable f, MonadPlus m)
          => ArrowState s    x     y
          -> ArrowState s (f x) (m y)
 iterateS a = ArrowState $ \(s,f) -> foldr a' (s,mzero) f
-  where a' x (s',m) = second ((mplus m).return) $ runArrowState a (s',x)
+  where a' x (s',m) = second (mplus m.return) $ runArrowState a (s',x)
 
 -- | Fold a state arrow through something 'Foldable'. Collect the results in a
 -- 'MonadPlus'.
@@ -147,7 +123,7 @@ iterateSL :: (Foldable f, MonadPlus m)
           => ArrowState s    x     y
           -> ArrowState s (f x) (m y)
 iterateSL a = ArrowState $ \(s,f) -> foldl a' (s,mzero) f
-  where a' (s',m) x = second ((mplus m).return) $ runArrowState a (s',x)
+  where a' (s',m) x = second (mplus m.return) $ runArrowState a (s',x)
 
 
 -- | Fold a fallible state arrow through something 'Foldable'.

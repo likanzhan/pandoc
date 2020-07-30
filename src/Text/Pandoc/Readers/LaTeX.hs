@@ -1,29 +1,13 @@
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE PatternGuards       #-}
-{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE CPP                   #-}
+{-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-
-Copyright (C) 2006-2017 John MacFarlane <jgm@berkeley.edu>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE PatternGuards         #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE ViewPatterns          #-}
 {- |
    Module      : Text.Pandoc.Readers.LaTeX
-   Copyright   : Copyright (C) 2006-2017 John MacFarlane
+   Copyright   : Copyright (C) 2006-2020 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -37,45 +21,52 @@ module Text.Pandoc.Readers.LaTeX ( readLaTeX,
                                    applyMacros,
                                    rawLaTeXInline,
                                    rawLaTeXBlock,
-                                   inlineCommand
+                                   inlineCommand,
+                                   tokenize,
+                                   untokenize
                                  ) where
 
 import Control.Applicative (many, optional, (<|>))
 import Control.Monad
 import Control.Monad.Except (throwError)
-import Control.Monad.Trans (lift)
-import Data.Char (chr, isAlphaNum, isLetter, ord, isDigit, toLower)
+import Data.Char (isDigit, isLetter, toUpper, chr)
 import Data.Default
+import Data.List (intercalate)
+import qualified Data.Map as M
+import Data.Maybe (fromMaybe, maybeToList)
+import qualified Data.Set as Set
+import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.List (intercalate, isPrefixOf)
-import qualified Data.Map as M
-import qualified Data.Set as Set
-import Data.Maybe (fromMaybe, maybeToList)
-import Safe (minimumDef)
 import System.FilePath (addExtension, replaceExtension, takeExtension)
+import Text.Pandoc.BCP47 (Lang (..), renderLang)
 import Text.Pandoc.Builder
-import Text.Pandoc.Class (PandocMonad, PandocPure, lookupEnv,
-                          readFileFromDirs, report, setResourcePath,
-                          getResourcePath, setTranslations, translateTerm)
-import qualified Text.Pandoc.Translations as Translations
-import Text.Pandoc.BCP47 (Lang(..), renderLang)
+import Text.Pandoc.Class.PandocPure (PandocPure)
+import Text.Pandoc.Class.PandocMonad (PandocMonad (..), getResourcePath,
+                                      readFileFromDirs, report, setResourcePath,
+                                      setTranslations, translateTerm)
+import Text.Pandoc.Error (PandocError (PandocParseError, PandocParsecError))
 import Text.Pandoc.Highlighting (fromListingsLanguage, languagesByExtension)
 import Text.Pandoc.ImageSize (numUnit, showFl)
 import Text.Pandoc.Logging
 import Text.Pandoc.Options
-import Text.Pandoc.Parsing hiding (many, optional, withRaw,
-                            mathInline, mathDisplay,
-                            space, (<|>), spaces, blankline)
+import Text.Pandoc.Parsing hiding (blankline, many, mathDisplay, mathInline,
+                            optional, space, spaces, withRaw, (<|>))
+import Text.Pandoc.Readers.LaTeX.Types (ExpansionPoint (..), Macro (..),
+                                        ArgSpec (..), Tok (..), TokType (..))
+import Text.Pandoc.Readers.LaTeX.Parsing
+import Text.Pandoc.Readers.LaTeX.Lang (polyglossiaLangToBCP47,
+                                       babelLangToBCP47)
 import Text.Pandoc.Shared
-import Text.Pandoc.Readers.LaTeX.Types (Macro(..), ExpansionPoint(..), Tok(..),
-                            TokType(..))
+import qualified Text.Pandoc.Translations as Translations
 import Text.Pandoc.Walk
-import Text.Pandoc.Error (PandocError(PandocParsecError, PandocMacroLoop))
+import qualified Text.Pandoc.Builder as B
+import qualified Data.Text.Normalize as Normalize
+import Safe
 
 -- for debugging:
 -- import Text.Pandoc.Extensions (getDefaultExtensions)
--- import Text.Pandoc.Class (runIOorExplode, PandocIO)
+-- import Text.Pandoc.Class.PandocIO (runIOorExplode, PandocIO)
 -- import Debug.Trace (traceShowId)
 
 -- | Parse LaTeX from string and return 'Pandoc' document.
@@ -85,10 +76,10 @@ readLaTeX :: PandocMonad m
           -> m Pandoc
 readLaTeX opts ltx = do
   parsed <- runParserT parseLaTeX def{ sOptions = opts } "source"
-               (tokenize (crFilter ltx))
+               (tokenize "source" (crFilter ltx))
   case parsed of
     Right result -> return result
-    Left e       -> throwError $ PandocParsecError (T.unpack ltx) e
+    Left e       -> throwError $ PandocParsecError ltx e
 
 parseLaTeX :: PandocMonad m => LP m Pandoc
 parseLaTeX = do
@@ -98,25 +89,29 @@ parseLaTeX = do
   let meta = sMeta st
   let doc' = doc bs
   let headerLevel (Header n _ _) = [n]
-      headerLevel _ = []
+      headerLevel _              = []
+#if MIN_VERSION_safe(0,3,18)
+  let bottomLevel = minimumBound 1 $ query headerLevel doc'
+#else
   let bottomLevel = minimumDef 1 $ query headerLevel doc'
+#endif
   let adjustHeaders m (Header n attr ils) = Header (n+m) attr ils
-      adjustHeaders _ x = x
+      adjustHeaders _ x                   = x
   let (Pandoc _ bs') =
        -- handle the case where you have \part or \chapter
        (if bottomLevel < 1
            then walk (adjustHeaders (1 - bottomLevel))
            else id) $
-       walk (resolveRefs (sLabels st)) $ doc'
+       walk (resolveRefs (sLabels st)) doc'
   return $ Pandoc meta bs'
 
-resolveRefs :: M.Map String [Inline] -> Inline -> Inline
+resolveRefs :: M.Map Text [Inline] -> Inline -> Inline
 resolveRefs labels x@(Link (ident,classes,kvs) _ _) =
   case (lookup "reference-type" kvs,
         lookup "reference" kvs) of
         (Just "ref", Just lab) ->
           case M.lookup lab labels of
-               Just txt -> Link (ident,classes,kvs) txt ('#':lab, "")
+               Just txt -> Link (ident,classes,kvs) txt ("#" <> lab, "")
                Nothing  -> x
         _ -> x
 resolveRefs _ x = x
@@ -127,467 +122,77 @@ resolveRefs _ x = x
 --   res <- runIOorExplode (runParserT p defaultLaTeXState{
 --             sOptions = def{ readerExtensions =
 --               enableExtension Ext_raw_tex $
---                 getDefaultExtensions "latex" }} "source" (tokenize t))
+--                 getDefaultExtensions "latex" }} "source" (tokenize "source" t))
 --   case res of
 --        Left e  -> error (show e)
 --        Right r -> return r
 
-newtype HeaderNum = HeaderNum [Int]
-  deriving (Show)
-
-renderHeaderNum :: HeaderNum -> String
-renderHeaderNum (HeaderNum xs) =
-  intercalate "." (map show xs)
-
-incrementHeaderNum :: Int -> HeaderNum -> HeaderNum
-incrementHeaderNum level (HeaderNum ns) = HeaderNum $
-  case reverse (take level (ns ++ repeat 0)) of
-       (x:xs) -> reverse (x+1 : xs)
-       []     -> []  -- shouldn't happen
-
-data LaTeXState = LaTeXState{ sOptions       :: ReaderOptions
-                            , sMeta          :: Meta
-                            , sQuoteContext  :: QuoteContext
-                            , sMacros        :: M.Map Text Macro
-                            , sContainers    :: [String]
-                            , sHeaders       :: M.Map Inlines String
-                            , sLogMessages   :: [LogMessage]
-                            , sIdentifiers   :: Set.Set String
-                            , sVerbatimMode  :: Bool
-                            , sCaption       :: Maybe Inlines
-                            , sInListItem    :: Bool
-                            , sInTableCell   :: Bool
-                            , sLastHeaderNum :: HeaderNum
-                            , sLabels        :: M.Map String [Inline]
-                            , sToggles       :: M.Map String Bool
-                            }
-     deriving Show
-
-defaultLaTeXState :: LaTeXState
-defaultLaTeXState = LaTeXState{ sOptions       = def
-                              , sMeta          = nullMeta
-                              , sQuoteContext  = NoQuote
-                              , sMacros        = M.empty
-                              , sContainers    = []
-                              , sHeaders       = M.empty
-                              , sLogMessages   = []
-                              , sIdentifiers   = Set.empty
-                              , sVerbatimMode  = False
-                              , sCaption       = Nothing
-                              , sInListItem    = False
-                              , sInTableCell   = False
-                              , sLastHeaderNum = HeaderNum []
-                              , sLabels        = M.empty
-                              , sToggles       = M.empty
-                              }
-
-instance PandocMonad m => HasQuoteContext LaTeXState m where
-  getQuoteContext = sQuoteContext <$> getState
-  withQuoteContext context parser = do
-    oldState <- getState
-    let oldQuoteContext = sQuoteContext oldState
-    setState oldState { sQuoteContext = context }
-    result <- parser
-    newState <- getState
-    setState newState { sQuoteContext = oldQuoteContext }
-    return result
-
-instance HasLogMessages LaTeXState where
-  addLogMessage msg st = st{ sLogMessages = msg : sLogMessages st }
-  getLogMessages st = reverse $ sLogMessages st
-
-instance HasIdentifierList LaTeXState where
-  extractIdentifierList     = sIdentifiers
-  updateIdentifierList f st = st{ sIdentifiers = f $ sIdentifiers st }
-
-instance HasIncludeFiles LaTeXState where
-  getIncludeFiles = sContainers
-  addIncludeFile f s = s{ sContainers = f : sContainers s }
-  dropLatestIncludeFile s = s { sContainers = drop 1 $ sContainers s }
-
-instance HasHeaderMap LaTeXState where
-  extractHeaderMap     = sHeaders
-  updateHeaderMap f st = st{ sHeaders = f $ sHeaders st }
-
-instance HasMacros LaTeXState where
-  extractMacros  st  = sMacros st
-  updateMacros f st  = st{ sMacros = f (sMacros st) }
-
-instance HasReaderOptions LaTeXState where
-  extractReaderOptions = sOptions
-
-instance HasMeta LaTeXState where
-  setMeta field val st =
-    st{ sMeta = setMeta field val $ sMeta st }
-  deleteMeta field st =
-    st{ sMeta = deleteMeta field $ sMeta st }
-
-instance Default LaTeXState where
-  def = defaultLaTeXState
-
-type LP m = ParserT [Tok] LaTeXState m
-
-withVerbatimMode :: PandocMonad m => LP m a -> LP m a
-withVerbatimMode parser = do
-  updateState $ \st -> st{ sVerbatimMode = True }
-  result <- parser
-  updateState $ \st -> st{ sVerbatimMode = False }
-  return result
-
-rawLaTeXParser :: (PandocMonad m, HasMacros s, HasReaderOptions s)
-               => LP m a -> ParserT String s m String
-rawLaTeXParser parser = do
-  inp <- getInput
-  let toks = tokenize $ T.pack inp
-  pstate <- getState
-  let lstate = def{ sOptions = extractReaderOptions pstate }
-  res <- lift $ runParserT ((,) <$> try (snd <$> withRaw parser) <*> getState)
-            lstate "source" toks
-  case res of
-       Left _    -> mzero
-       Right (raw, st) -> do
-         updateState (updateMacros ((sMacros st) <>))
-         takeP (T.length (untokenize raw))
-
-applyMacros :: (PandocMonad m, HasMacros s, HasReaderOptions s)
-            => String -> ParserT String s m String
-applyMacros s = (guardDisabled Ext_latex_macros >> return s) <|>
-   do let retokenize = doMacros 0 *>
-             (toksToString <$> many (satisfyTok (const True)))
-      pstate <- getState
-      let lstate = def{ sOptions = extractReaderOptions pstate
-                      , sMacros  = extractMacros pstate }
-      res <- runParserT retokenize lstate "math" (tokenize (T.pack s))
-      case res of
-           Left e -> fail (show e)
-           Right s' -> return s'
 
 rawLaTeXBlock :: (PandocMonad m, HasMacros s, HasReaderOptions s)
-              => ParserT String s m String
+              => ParserT Text s m Text
 rawLaTeXBlock = do
   lookAhead (try (char '\\' >> letter))
-  rawLaTeXParser (environment <|> macroDef <|> blockCommand)
+  inp <- getInput
+  let toks = tokenize "source" inp
+  snd <$> (rawLaTeXParser toks False (macroDef (const mempty)) blocks
+      <|> (rawLaTeXParser toks True
+             (do choice (map controlSeq
+                   ["include", "input", "subfile", "usepackage"])
+                 skipMany opt
+                 braced
+                 return mempty) blocks)
+      <|> rawLaTeXParser toks True
+           (environment <|> blockCommand)
+           (mconcat <$> (many (block <|> beginOrEndCommand))))
+
+-- See #4667 for motivation; sometimes people write macros
+-- that just evaluate to a begin or end command, which blockCommand
+-- won't accept.
+beginOrEndCommand :: PandocMonad m => LP m Blocks
+beginOrEndCommand = try $ do
+  Tok _ (CtrlSeq name) txt <- anyControlSeq
+  guard $ name == "begin" || name == "end"
+  (envname, rawargs) <- withRaw braced
+  if M.member (untokenize envname)
+      (inlineEnvironments :: M.Map Text (LP PandocPure Inlines))
+     then mzero
+     else return $ rawBlock "latex"
+                    (txt <> untokenize rawargs)
 
 rawLaTeXInline :: (PandocMonad m, HasMacros s, HasReaderOptions s)
-               => ParserT String s m String
+               => ParserT Text s m Text
 rawLaTeXInline = do
-  lookAhead (try (char '\\' >> letter) <|> char '$')
-  rawLaTeXParser (inlineEnvironment <|> inlineCommand')
-
-inlineCommand :: PandocMonad m => ParserT String ParserState m Inlines
-inlineCommand = do
-  lookAhead (try (char '\\' >> letter) <|> char '$')
+  lookAhead (try (char '\\' >> letter))
   inp <- getInput
-  let toks = tokenize $ T.pack inp
-  let rawinline = do
-         (il, raw) <- try $ withRaw (inlineEnvironment <|> inlineCommand')
-         st <- getState
-         return (il, raw, st)
-  pstate <- getState
-  let lstate = def{ sOptions = extractReaderOptions pstate
-                  , sMacros  = extractMacros pstate }
-  res <- runParserT rawinline lstate "source" toks
-  case res of
-       Left _ -> mzero
-       Right (il, raw, s) -> do
-         updateState $ updateMacros (const $ sMacros s)
-         takeP (T.length (untokenize raw))
-         return il
+  let toks = tokenize "source" inp
+  raw <- snd <$>
+          (   rawLaTeXParser toks True
+              (mempty <$ (controlSeq "input" >> skipMany opt >> braced))
+              inlines
+          <|> rawLaTeXParser toks True (inlineEnvironment <|> inlineCommand')
+              inlines
+          )
+  finalbraces <- mconcat <$> many (try (string "{}")) -- see #5439
+  return $ raw <> T.pack finalbraces
 
-tokenize :: Text -> [Tok]
-tokenize = totoks (1, 1)
-
-totoks :: (Line, Column) -> Text -> [Tok]
-totoks (lin,col) t =
-  case T.uncons t of
-       Nothing        -> []
-       Just (c, rest)
-         | c == '\n' ->
-           Tok (lin, col) Newline "\n"
-           : totoks (lin + 1,1) rest
-         | isSpaceOrTab c ->
-           let (sps, rest') = T.span isSpaceOrTab t
-           in  Tok (lin, col) Spaces sps
-               : totoks (lin, col + T.length sps) rest'
-         | isAlphaNum c ->
-           let (ws, rest') = T.span isAlphaNum t
-           in  Tok (lin, col) Word ws
-               : totoks (lin, col + T.length ws) rest'
-         | c == '%' ->
-           let (cs, rest') = T.break (== '\n') rest
-           in  Tok (lin, col) Comment ("%" <> cs)
-               : totoks (lin, col + 1 + T.length cs) rest'
-         | c == '\\' ->
-           case T.uncons rest of
-                Nothing -> [Tok (lin, col) Symbol (T.singleton c)]
-                Just (d, rest')
-                  | isLetterOrAt d ->
-                      -- \makeatletter is common in macro defs;
-                      -- ideally we should make tokenization sensitive
-                      -- to \makeatletter and \makeatother, but this is
-                      -- probably best for now
-                      let (ws, rest'') = T.span isLetterOrAt rest
-                          (ss, rest''') = T.span isSpaceOrTab rest''
-                      in  Tok (lin, col) (CtrlSeq ws) ("\\" <> ws <> ss)
-                          : totoks (lin,
-                                 col + 1 + T.length ws + T.length ss) rest'''
-                  | d == '\t' || d == '\n' ->
-                      Tok (lin, col) Symbol ("\\")
-                      : totoks (lin, col + 1) rest
-                  | otherwise  ->
-                      Tok (lin, col) (CtrlSeq (T.singleton d)) (T.pack [c,d])
-                      : totoks (lin, col + 2) rest'
-         | c == '#' ->
-           let (t1, t2) = T.span (\d -> d >= '0' && d <= '9') rest
-           in  case safeRead (T.unpack t1) of
-                    Just i ->
-                       Tok (lin, col) (Arg i) ("#" <> t1)
-                       : totoks (lin, col + 1 + T.length t1) t2
-                    Nothing ->
-                       Tok (lin, col) Symbol ("#")
-                       : totoks (lin, col + 1) t2
-         | c == '^' ->
-           case T.uncons rest of
-                Just ('^', rest') ->
-                  case T.uncons rest' of
-                       Just (d, rest'')
-                         | isLowerHex d ->
-                           case T.uncons rest'' of
-                                Just (e, rest''') | isLowerHex e ->
-                                  Tok (lin, col) Esc2 (T.pack ['^','^',d,e])
-                                  : totoks (lin, col + 4) rest'''
-                                _ ->
-                                  Tok (lin, col) Esc1 (T.pack ['^','^',d])
-                                  : totoks (lin, col + 3) rest''
-                         | d < '\128' ->
-                                  Tok (lin, col) Esc1 (T.pack ['^','^',d])
-                                  : totoks (lin, col + 3) rest''
-                       _ -> [Tok (lin, col) Symbol ("^"),
-                             Tok (lin, col + 1) Symbol ("^")]
-                _ -> Tok (lin, col) Symbol ("^")
-                     : totoks (lin, col + 1) rest
-         | otherwise ->
-           Tok (lin, col) Symbol (T.singleton c) : totoks (lin, col + 1) rest
-
-  where isSpaceOrTab ' '  = True
-        isSpaceOrTab '\t' = True
-        isSpaceOrTab _    = False
-        isLetterOrAt '@'  = True
-        isLetterOrAt c    = isLetter c
-
-isLowerHex :: Char -> Bool
-isLowerHex x = x >= '0' && x <= '9' || x >= 'a' && x <= 'f'
-
-untokenize :: [Tok] -> Text
-untokenize = mconcat . map untoken
-
-untoken :: Tok -> Text
-untoken (Tok _ _ t) = t
-
-satisfyTok :: PandocMonad m => (Tok -> Bool) -> LP m Tok
-satisfyTok f =
-  try $ do
-    res <- tokenPrim (T.unpack . untoken) updatePos matcher
-    doMacros 0 -- apply macros on remaining input stream
-    return res
-  where matcher t | f t       = Just t
-                  | otherwise = Nothing
-        updatePos :: SourcePos -> Tok -> [Tok] -> SourcePos
-        updatePos spos _ (Tok (lin,col) _ _ : _) =
-          setSourceColumn (setSourceLine spos lin) col
-        updatePos spos _ [] = spos
-
-doMacros :: PandocMonad m => Int -> LP m ()
-doMacros n = do
-  verbatimMode <- sVerbatimMode <$> getState
-  when (not verbatimMode) $ do
-    inp <- getInput
-    case inp of
-         Tok spos (CtrlSeq "begin") _ : Tok _ Symbol "{" :
-          Tok _ Word name : Tok _ Symbol "}" : ts
-            -> handleMacros spos name ts
-         Tok spos (CtrlSeq "end") _ : Tok _ Symbol "{" :
-          Tok _ Word name : Tok _ Symbol "}" : ts
-            -> handleMacros spos ("end" <> name) ts
-         Tok spos (CtrlSeq name) _ : ts
-            -> handleMacros spos name ts
-         _ -> return ()
-  where handleMacros spos name ts = do
-                macros <- sMacros <$> getState
-                case M.lookup name macros of
-                     Nothing -> return ()
-                     Just (Macro expansionPoint numargs optarg newtoks) -> do
-                       setInput ts
-                       let getarg = spaces >> braced
-                       args <- case optarg of
-                                    Nothing -> count numargs getarg
-                                    Just o  ->
-                                       (:) <$> option o bracketedToks
-                                           <*> count (numargs - 1) getarg
-                       let addTok (Tok _ (Arg i) _) acc | i > 0
-                                                        , i <= numargs =
-                                 map (setpos spos) (args !! (i - 1)) ++ acc
-                           addTok t acc = setpos spos t : acc
-                       ts' <- getInput
-                       setInput $ foldr addTok ts' newtoks
-                       case expansionPoint of
-                            ExpandWhenUsed ->
-                              if n > 20  -- detect macro expansion loops
-                                 then throwError $ PandocMacroLoop (T.unpack name)
-                                 else doMacros (n + 1)
-                            ExpandWhenDefined -> return ()
-
-setpos :: (Line, Column) -> Tok -> Tok
-setpos spos (Tok _ tt txt) = Tok spos tt txt
-
-anyControlSeq :: PandocMonad m => LP m Tok
-anyControlSeq = satisfyTok isCtrlSeq
-  where isCtrlSeq (Tok _ (CtrlSeq _) _) = True
-        isCtrlSeq _                     = False
-
-anySymbol :: PandocMonad m => LP m Tok
-anySymbol = satisfyTok isSym
-  where isSym (Tok _ Symbol _) = True
-        isSym _                = False
-
-spaces :: PandocMonad m => LP m ()
-spaces = skipMany (satisfyTok (tokTypeIn [Comment, Spaces, Newline]))
-
-spaces1 :: PandocMonad m => LP m ()
-spaces1 = skipMany1 (satisfyTok (tokTypeIn [Comment, Spaces, Newline]))
-
-tokTypeIn :: [TokType] -> Tok -> Bool
-tokTypeIn toktypes (Tok _ tt _) = tt `elem` toktypes
-
-controlSeq :: PandocMonad m => Text -> LP m Tok
-controlSeq name = satisfyTok isNamed
-  where isNamed (Tok _ (CtrlSeq n) _) = n == name
-        isNamed _ = False
-
-symbol :: PandocMonad m => Char -> LP m Tok
-symbol c = satisfyTok isc
-  where isc (Tok _ Symbol d) = case T.uncons d of
-                                    Just (c',_) -> c == c'
-                                    _ -> False
-        isc _ = False
-
-symbolIn :: PandocMonad m => [Char] -> LP m Tok
-symbolIn cs = satisfyTok isInCs
-  where isInCs (Tok _ Symbol d) = case T.uncons d of
-                                       Just (c,_) -> c `elem` cs
-                                       _ -> False
-        isInCs _ = False
-
-sp :: PandocMonad m => LP m ()
-sp = whitespace <|> endline
-
-whitespace :: PandocMonad m => LP m ()
-whitespace = () <$ satisfyTok isSpaceTok
-  where isSpaceTok (Tok _ Spaces _) = True
-        isSpaceTok _ = False
-
-newlineTok :: PandocMonad m => LP m ()
-newlineTok = () <$ satisfyTok isNewlineTok
-
-isNewlineTok :: Tok -> Bool
-isNewlineTok (Tok _ Newline _) = True
-isNewlineTok _ = False
-
-comment :: PandocMonad m => LP m ()
-comment = () <$ satisfyTok isCommentTok
-  where isCommentTok (Tok _ Comment _) = True
-        isCommentTok _ = False
-
-anyTok :: PandocMonad m => LP m Tok
-anyTok = satisfyTok (const True)
-
-endline :: PandocMonad m => LP m ()
-endline = try $ do
-  newlineTok
-  lookAhead anyTok
-  notFollowedBy blankline
-
-blankline :: PandocMonad m => LP m ()
-blankline = try $ skipMany whitespace *> newlineTok
-
-primEscape :: PandocMonad m => LP m Char
-primEscape = do
-  Tok _ toktype t <- satisfyTok (tokTypeIn [Esc1, Esc2])
-  case toktype of
-       Esc1 -> case T.uncons (T.drop 2 t) of
-                    Just (c, _)
-                      | c >= '\64' && c <= '\127' -> return (chr (ord c - 64))
-                      | otherwise                 -> return (chr (ord c + 64))
-                    Nothing -> fail "Empty content of Esc1"
-       Esc2 -> case safeRead ('0':'x':T.unpack (T.drop 2 t)) of
-                    Just x -> return (chr x)
-                    Nothing -> fail $ "Could not read: " ++ T.unpack t
-       _    -> fail "Expected an Esc1 or Esc2 token" -- should not happen
-
-bgroup :: PandocMonad m => LP m Tok
-bgroup = try $ do
-  skipMany sp
-  symbol '{' <|> controlSeq "bgroup" <|> controlSeq "begingroup"
-
-egroup :: PandocMonad m => LP m Tok
-egroup = (symbol '}' <|> controlSeq "egroup" <|> controlSeq "endgroup")
-
-grouped :: (PandocMonad m,  Monoid a) => LP m a -> LP m a
-grouped parser = try $ do
-  bgroup
-  -- first we check for an inner 'grouped', because
-  -- {{a,b}} should be parsed the same as {a,b}
-  try (grouped parser <* egroup) <|> (mconcat <$> manyTill parser egroup)
-
-braced :: PandocMonad m => LP m [Tok]
-braced = bgroup *> braced' 1
-  where braced' (n :: Int) =
-          handleEgroup n <|> handleBgroup n <|> handleOther n
-        handleEgroup n = do
-          t <- egroup
-          if n == 1
-             then return []
-             else (t:) <$> braced' (n - 1)
-        handleBgroup n = do
-          t <- bgroup
-          (t:) <$> braced' (n + 1)
-        handleOther n = do
-          t <- anyTok
-          (t:) <$> braced' n
-
-bracketed :: PandocMonad m => Monoid a => LP m a -> LP m a
-bracketed parser = try $ do
-  symbol '['
-  mconcat <$> manyTill parser (symbol ']')
-
-dimenarg :: PandocMonad m => LP m Text
-dimenarg = try $ do
-  ch  <- option False $ True <$ symbol '='
-  Tok _ _ s <- satisfyTok isWordTok
-  guard $ (T.take 2 (T.reverse s)) `elem`
-           ["pt","pc","in","bp","cm","mm","dd","cc","sp"]
-  let num = T.take (T.length s - 2) s
-  guard $ T.length num > 0
-  guard $ T.all isDigit num
-  return $ T.pack ['=' | ch] <> s
+inlineCommand :: PandocMonad m => ParserT Text ParserState m Inlines
+inlineCommand = do
+  lookAhead (try (char '\\' >> letter))
+  inp <- getInput
+  let toks = tokenize "source" inp
+  fst <$> rawLaTeXParser toks True (inlineEnvironment <|> inlineCommand')
+          inlines
 
 -- inline elements:
 
 word :: PandocMonad m => LP m Inlines
-word = (str . T.unpack . untoken) <$> satisfyTok isWordTok
+word = (str . untoken) <$> satisfyTok isWordTok
 
 regularSymbol :: PandocMonad m => LP m Inlines
-regularSymbol = (str . T.unpack . untoken) <$> satisfyTok isRegularSymbol
+regularSymbol = (str . untoken) <$> satisfyTok isRegularSymbol
   where isRegularSymbol (Tok _ Symbol t) = not $ T.any isSpecial t
-        isRegularSymbol _ = False
+        isRegularSymbol _                = False
         isSpecial c = c `Set.member` specialChars
-
-specialChars :: Set.Set Char
-specialChars = Set.fromList "#$%&~_^\\{}"
-
-isWordTok :: Tok -> Bool
-isWordTok (Tok _ Word _) = True
-isWordTok _ = False
 
 inlineGroup :: PandocMonad m => LP m Inlines
 inlineGroup = do
@@ -600,32 +205,42 @@ inlineGroup = do
 
 doLHSverb :: PandocMonad m => LP m Inlines
 doLHSverb =
-  (codeWith ("",["haskell"],[]) . T.unpack . untokenize)
+  (codeWith ("",["haskell"],[]) . untokenize)
     <$> manyTill (satisfyTok (not . isNewlineTok)) (symbol '|')
 
-mkImage :: PandocMonad m => [(String, String)] -> String -> LP m Inlines
-mkImage options src = do
+mkImage :: PandocMonad m => [(Text, Text)] -> Text -> LP m Inlines
+mkImage options (T.unpack -> src) = do
    let replaceTextwidth (k,v) =
          case numUnit v of
-              Just (num, "\\textwidth") -> (k, showFl (num * 100) ++ "%")
-              _ -> (k, v)
+              Just (num, "\\textwidth") -> (k, showFl (num * 100) <> "%")
+              _                         -> (k, v)
    let kvs = map replaceTextwidth
              $ filter (\(k,_) -> k `elem` ["width", "height"]) options
    let attr = ("",[], kvs)
    let alt = str "image"
-   case takeExtension src of
-        "" -> do
-              defaultExt <- getOption readerDefaultImageExtension
-              return $ imageWith attr (addExtension src defaultExt) "" alt
-        _  -> return $ imageWith attr src "" alt
+   defaultExt <- getOption readerDefaultImageExtension
+   let exts' = [".pdf", ".png", ".jpg", ".mps", ".jpeg", ".jbig2", ".jb2"]
+   let exts  = exts' ++ map (map toUpper) exts'
+   let findFile s [] = return s
+       findFile s (e:es) = do
+         let s' = addExtension s e
+         exists <- fileExists s'
+         if exists
+            then return s'
+            else findFile s es
+   src' <- case takeExtension src of
+               "" | not (T.null defaultExt) -> return $ addExtension src $ T.unpack defaultExt
+                  | otherwise -> findFile src exts
+               _  -> return src
+   return $ imageWith attr (T.pack src') "" alt
 
 doxspace :: PandocMonad m => LP m Inlines
-doxspace = do
+doxspace =
   (space <$ lookAhead (satisfyTok startsWithLetter)) <|> return mempty
   where startsWithLetter (Tok _ Word t) =
           case T.uncons t of
                Just (c, _) | isLetter c -> True
-               _ -> False
+               _           -> False
         startsWithLetter _ = False
 
 
@@ -635,7 +250,7 @@ dosiunitx = do
   skipopts
   value <- tok
   valueprefix <- option "" $ bracketed tok
-  unit <- tok
+  unit <- grouped (mconcat <$> many1 siUnit) <|> siUnit <|> tok
   let emptyOr160 "" = ""
       emptyOr160 _  = "\160"
   return . mconcat $ [valueprefix,
@@ -644,36 +259,240 @@ dosiunitx = do
                       emptyOr160 unit,
                       unit]
 
-lit :: String -> LP m Inlines
+-- converts e.g. \SIRange{100}{200}{\ms} to "100 ms--200 ms"
+doSIRange :: PandocMonad m => LP m Inlines
+doSIRange = do
+  skipopts
+  startvalue <- tok
+  startvalueprefix <- option "" $ bracketed tok
+  stopvalue <- tok
+  stopvalueprefix <- option "" $ bracketed tok
+  unit <- grouped (mconcat <$> many1 siUnit) <|> siUnit <|> tok
+  let emptyOr160 "" = ""
+      emptyOr160 _  = "\160"
+  return . mconcat $ [startvalueprefix,
+                      emptyOr160 startvalueprefix,
+                      startvalue,
+                      emptyOr160 unit,
+                      unit,
+                      "\8211", -- An en-dash
+                      stopvalueprefix,
+                      emptyOr160 stopvalueprefix,
+                      stopvalue,
+                      emptyOr160 unit,
+                      unit]
+
+siUnit :: PandocMonad m => LP m Inlines
+siUnit = do
+  Tok _ (CtrlSeq name) _ <- anyControlSeq
+  if name == "square"
+     then do
+       unit <- grouped (mconcat <$> many1 siUnit) <|> siUnit <|> tok
+       return . mconcat $ [unit, "\178"]
+     else
+       case M.lookup name siUnitMap of
+            Just il -> return il
+            Nothing -> mzero
+
+siUnitMap :: M.Map Text Inlines
+siUnitMap = M.fromList
+  [ ("fg", str "fg")
+  , ("pg", str "pg")
+  , ("ng", str "ng")
+  , ("ug", str "μg")
+  , ("mg", str "mg")
+  , ("g", str "g")
+  , ("kg", str "kg")
+  , ("amu", str "u")
+  , ("pm", str "pm")
+  , ("nm", str "nm")
+  , ("um", str "μm")
+  , ("mm", str "mm")
+  , ("cm", str "cm")
+  , ("dm", str "dm")
+  , ("m", str "m")
+  , ("km", str "km")
+  , ("as", str "as")
+  , ("fs", str "fs")
+  , ("ps", str "ps")
+  , ("ns", str "ns")
+  , ("us", str "μs")
+  , ("ms", str "ms")
+  , ("s", str "s")
+  , ("fmol", str "fmol")
+  , ("pmol", str "pmol")
+  , ("nmol", str "nmol")
+  , ("umol", str "μmol")
+  , ("mmol", str "mmol")
+  , ("mol", str "mol")
+  , ("kmol", str "kmol")
+  , ("pA", str "pA")
+  , ("nA", str "nA")
+  , ("uA", str "μA")
+  , ("mA", str "mA")
+  , ("A", str "A")
+  , ("kA", str "kA")
+  , ("ul", str "μl")
+  , ("ml", str "ml")
+  , ("l", str "l")
+  , ("hl", str "hl")
+  , ("uL", str "μL")
+  , ("mL", str "mL")
+  , ("L", str "L")
+  , ("hL", str "hL")
+  , ("mHz", str "mHz")
+  , ("Hz", str "Hz")
+  , ("kHz", str "kHz")
+  , ("MHz", str "MHz")
+  , ("GHz", str "GHz")
+  , ("THz", str "THz")
+  , ("mN", str "mN")
+  , ("N", str "N")
+  , ("kN", str "kN")
+  , ("MN", str "MN")
+  , ("Pa", str "Pa")
+  , ("kPa", str "kPa")
+  , ("MPa", str "MPa")
+  , ("GPa", str "GPa")
+  , ("mohm", str "mΩ")
+  , ("kohm", str "kΩ")
+  , ("Mohm", str "MΩ")
+  , ("pV", str "pV")
+  , ("nV", str "nV")
+  , ("uV", str "μV")
+  , ("mV", str "mV")
+  , ("V", str "V")
+  , ("kV", str "kV")
+  , ("W", str "W")
+  , ("uW", str "μW")
+  , ("mW", str "mW")
+  , ("kW", str "kW")
+  , ("MW", str "MW")
+  , ("GW", str "GW")
+  , ("J", str "J")
+  , ("uJ", str "μJ")
+  , ("mJ", str "mJ")
+  , ("kJ", str "kJ")
+  , ("eV", str "eV")
+  , ("meV", str "meV")
+  , ("keV", str "keV")
+  , ("MeV", str "MeV")
+  , ("GeV", str "GeV")
+  , ("TeV", str "TeV")
+  , ("kWh", str "kWh")
+  , ("F", str "F")
+  , ("fF", str "fF")
+  , ("pF", str "pF")
+  , ("K", str "K")
+  , ("dB", str "dB")
+  , ("angstrom", str "Å")
+  , ("arcmin", str "′")
+  , ("arcminute", str "′")
+  , ("arcsecond", str "″")
+  , ("astronomicalunit", str "ua")
+  , ("atomicmassunit", str "u")
+  , ("atto", str "a")
+  , ("bar", str "bar")
+  , ("barn", str "b")
+  , ("becquerel", str "Bq")
+  , ("bel", str "B")
+  , ("candela", str "cd")
+  , ("celsius", str "°C")
+  , ("centi", str "c")
+  , ("coulomb", str "C")
+  , ("dalton", str "Da")
+  , ("day", str "d")
+  , ("deca", str "d")
+  , ("deci", str "d")
+  , ("decibel", str "db")
+  , ("degreeCelsius",str "°C")
+  , ("degree", str "°")
+  , ("deka", str "d")
+  , ("electronvolt", str "eV")
+  , ("exa", str "E")
+  , ("farad", str "F")
+  , ("femto", str "f")
+  , ("giga", str "G")
+  , ("gram", str "g")
+  , ("hectare", str "ha")
+  , ("hecto", str "h")
+  , ("henry", str "H")
+  , ("hertz", str "Hz")
+  , ("hour", str "h")
+  , ("joule", str "J")
+  , ("katal", str "kat")
+  , ("kelvin", str "K")
+  , ("kilo", str "k")
+  , ("kilogram", str "kg")
+  , ("knot", str "kn")
+  , ("liter", str "L")
+  , ("litre", str "l")
+  , ("lumen", str "lm")
+  , ("lux", str "lx")
+  , ("mega", str "M")
+  , ("meter", str "m")
+  , ("metre", str "m")
+  , ("micro", str "μ")
+  , ("milli", str "m")
+  , ("minute", str "min")
+  , ("mmHg", str "mmHg")
+  , ("mole", str "mol")
+  , ("nano", str "n")
+  , ("nauticalmile", str "M")
+  , ("neper", str "Np")
+  , ("newton", str "N")
+  , ("ohm", str "Ω")
+  , ("Pa", str "Pa")
+  , ("pascal", str "Pa")
+  , ("percent", str "%")
+  , ("per", str "/")
+  , ("peta", str "P")
+  , ("pico", str "p")
+  , ("radian", str "rad")
+  , ("second", str "s")
+  , ("siemens", str "S")
+  , ("sievert", str "Sv")
+  , ("steradian", str "sr")
+  , ("tera", str "T")
+  , ("tesla", str "T")
+  , ("tonne", str "t")
+  , ("volt", str "V")
+  , ("watt", str "W")
+  , ("weber", str "Wb")
+  , ("yocto", str "y")
+  , ("yotta", str "Y")
+  , ("zepto", str "z")
+  , ("zetta", str "Z")
+  ]
+
+lit :: Text -> LP m Inlines
 lit = pure . str
 
 removeDoubleQuotes :: Text -> Text
 removeDoubleQuotes t =
-  maybe t id $ T.stripPrefix "\"" t >>= T.stripSuffix "\""
+  Data.Maybe.fromMaybe t $ T.stripPrefix "\"" t >>= T.stripSuffix "\""
 
 doubleQuote :: PandocMonad m => LP m Inlines
-doubleQuote = do
+doubleQuote =
        quoted' doubleQuoted (try $ count 2 $ symbol '`')
-                            (void $ try $ count 2 $ symbol '\'')
+                     (void $ try $ count 2 $ symbol '\'')
    <|> quoted' doubleQuoted ((:[]) <$> symbol '“') (void $ symbol '”')
    -- the following is used by babel for localized quotes:
    <|> quoted' doubleQuoted (try $ sequence [symbol '"', symbol '`'])
                             (void $ try $ sequence [symbol '"', symbol '\''])
-   <|> quoted' doubleQuoted ((:[]) <$> symbol '"')
-                            (void $ symbol '"')
 
 singleQuote :: PandocMonad m => LP m Inlines
-singleQuote = do
+singleQuote =
        quoted' singleQuoted ((:[]) <$> symbol '`')
-                            (try $ symbol '\'' >>
-                                  notFollowedBy (satisfyTok startsWithLetter))
+                     (try $ symbol '\'' >>
+                           notFollowedBy (satisfyTok startsWithLetter))
    <|> quoted' singleQuoted ((:[]) <$> symbol '‘')
                             (try $ symbol '’' >>
                                   notFollowedBy (satisfyTok startsWithLetter))
   where startsWithLetter (Tok _ Word t) =
           case T.uncons t of
                Just (c, _) | isLetter c -> True
-               _ -> False
+               _           -> False
         startsWithLetter _ = False
 
 quoted' :: PandocMonad m
@@ -682,7 +501,7 @@ quoted' :: PandocMonad m
         -> LP m ()
         -> LP m Inlines
 quoted' f starter ender = do
-  startchs <- (T.unpack . untokenize) <$> starter
+  startchs <- untokenize <$> starter
   smart <- extensionEnabled Ext_smart <$> getOption readerExtensions
   if smart
      then do
@@ -695,322 +514,134 @@ quoted' f starter ender = do
                               cs   -> cs)
      else lit startchs
 
-enquote :: PandocMonad m => LP m Inlines
-enquote = do
+enquote :: PandocMonad m => Bool -> Maybe Text -> LP m Inlines
+enquote starred mblang = do
   skipopts
+  let lang = mblang >>= babelLangToBCP47
+  let langspan = case lang of
+                      Nothing -> id
+                      Just l  -> spanWith ("",[],[("lang", renderLang l)])
   quoteContext <- sQuoteContext <$> getState
-  if quoteContext == InDoubleQuote
-     then singleQuoted <$> withQuoteContext InSingleQuote tok
-     else doubleQuoted <$> withQuoteContext InDoubleQuote tok
+  if starred || quoteContext == InDoubleQuote
+     then singleQuoted . langspan <$> withQuoteContext InSingleQuote tok
+     else doubleQuoted . langspan <$> withQuoteContext InDoubleQuote tok
 
-doAcronym :: PandocMonad m => String -> LP m Inlines
+blockquote :: PandocMonad m => Bool -> Maybe Text -> LP m Blocks
+blockquote citations mblang = do
+  citePar <- if citations
+                then do
+                  cs <- cites NormalCitation False
+                  return $ para (cite cs mempty)
+                else return mempty
+  let lang = mblang >>= babelLangToBCP47
+  let langdiv = case lang of
+                      Nothing -> id
+                      Just l  -> divWith ("",[],[("lang", renderLang l)])
+  bs <- grouped block
+  return $ blockQuote . langdiv $ (bs <> citePar)
+
+doAcronym :: PandocMonad m => Text -> LP m Inlines
 doAcronym form = do
   acro <- braced
-  return . mconcat $ [spanWith ("",[],[("acronym-label", toksToString acro),
-    ("acronym-form", "singular+" ++ form)])
-    $ str $ toksToString acro]
+  return . mconcat $ [spanWith ("",[],[("acronym-label", untokenize acro),
+    ("acronym-form", "singular+" <> form)])
+    $ str $ untokenize acro]
 
-doAcronymPlural :: PandocMonad m => String -> LP m Inlines
+doAcronymPlural :: PandocMonad m => Text -> LP m Inlines
 doAcronymPlural form = do
   acro <- braced
   plural <- lit "s"
-  return . mconcat $ [spanWith ("",[],[("acronym-label", toksToString acro),
-    ("acronym-form", "plural+" ++ form)]) $ mconcat
-    $ [str $ toksToString acro, plural]]
+  return . mconcat $ [spanWith ("",[],[("acronym-label", untokenize acro),
+    ("acronym-form", "plural+" <> form)]) $
+   mconcat [str $ untokenize acro, plural]]
 
 doverb :: PandocMonad m => LP m Inlines
 doverb = do
   Tok _ Symbol t <- anySymbol
   marker <- case T.uncons t of
               Just (c, ts) | T.null ts -> return c
-              _ -> mzero
+              _            -> mzero
   withVerbatimMode $
-    (code . T.unpack . untokenize) <$>
-      manyTill (verbTok marker) (symbol marker)
+    (code . untokenize) <$>
+      manyTill (notFollowedBy newlineTok >> verbTok marker) (symbol marker)
 
 verbTok :: PandocMonad m => Char -> LP m Tok
 verbTok stopchar = do
-  t@(Tok (lin, col) toktype txt) <- satisfyTok (not . isNewlineTok)
+  t@(Tok pos toktype txt) <- anyTok
   case T.findIndex (== stopchar) txt of
        Nothing -> return t
        Just i  -> do
          let (t1, t2) = T.splitAt i txt
          inp <- getInput
-         setInput $ Tok (lin, col + i) Symbol (T.singleton stopchar)
-                  : (totoks (lin, col + i + 1) (T.drop 1 t2)) ++ inp
-         return $ Tok (lin, col) toktype t1
+         setInput $ Tok (incSourceColumn pos i) Symbol (T.singleton stopchar)
+                  : totoks (incSourceColumn pos (i + 1)) (T.drop 1 t2) ++ inp
+         return $ Tok pos toktype t1
+
+listingsLanguage :: [(Text, Text)] -> Maybe Text
+listingsLanguage opts =
+  case lookup "language" opts of
+    Nothing  -> Nothing
+    Just l   -> fromListingsLanguage l `mplus` Just l
 
 dolstinline :: PandocMonad m => LP m Inlines
 dolstinline = do
   options <- option [] keyvals
-  let classes = maybeToList $ lookup "language" options >>= fromListingsLanguage
+  let classes = maybeToList $ listingsLanguage options
+  doinlinecode classes
+
+domintinline :: PandocMonad m => LP m Inlines
+domintinline = do
+  skipopts
+  cls <- untokenize <$> braced
+  doinlinecode [cls]
+
+doinlinecode :: PandocMonad m => [Text] -> LP m Inlines
+doinlinecode classes = do
   Tok _ Symbol t <- anySymbol
   marker <- case T.uncons t of
               Just (c, ts) | T.null ts -> return c
-              _ -> mzero
+              _            -> mzero
   let stopchar = if marker == '{' then '}' else marker
   withVerbatimMode $
-    (codeWith ("",classes,[]) . T.unpack . untokenize) <$>
+    (codeWith ("",classes,[]) . T.map nlToSpace . untokenize) <$>
       manyTill (verbTok stopchar) (symbol stopchar)
 
-keyval :: PandocMonad m => LP m (String, String)
-keyval = try $ do
-  Tok _ Word key <- satisfyTok isWordTok
-  let isSpecSym (Tok _ Symbol t) = t `elem` [".",":","-","|","\\"]
-      isSpecSym _ = False
-  val <- option [] $ do
-           symbol '='
-           braced <|> (many1 (satisfyTok isWordTok <|> satisfyTok isSpecSym
-                               <|> anyControlSeq))
-  optional sp
-  optional (symbol ',')
-  optional sp
-  return (T.unpack key, T.unpack . untokenize $ val)
+nlToSpace :: Char -> Char
+nlToSpace '\n' = ' '
+nlToSpace x    = x
 
-keyvals :: PandocMonad m => LP m [(String, String)]
-keyvals = try $ symbol '[' >> manyTill keyval (symbol ']')
+mathDisplay :: Text -> Inlines
+mathDisplay = displayMath . trimMath
 
-accent :: PandocMonad m => Char -> (Char -> String) -> LP m Inlines
-accent c f = try $ do
-  ils <- tok
-  case toList ils of
-       (Str (x:xs) : ys) -> return $ fromList (Str (f x ++ xs) : ys)
-       [Space]           -> return $ str [c]
-       []                -> return $ str [c]
-       _                 -> return ils
-
-grave :: Char -> String
-grave 'A' = "À"
-grave 'E' = "È"
-grave 'I' = "Ì"
-grave 'O' = "Ò"
-grave 'U' = "Ù"
-grave 'a' = "à"
-grave 'e' = "è"
-grave 'i' = "ì"
-grave 'o' = "ò"
-grave 'u' = "ù"
-grave c   = [c]
-
-acute :: Char -> String
-acute 'A' = "Á"
-acute 'E' = "É"
-acute 'I' = "Í"
-acute 'O' = "Ó"
-acute 'U' = "Ú"
-acute 'Y' = "Ý"
-acute 'a' = "á"
-acute 'e' = "é"
-acute 'i' = "í"
-acute 'o' = "ó"
-acute 'u' = "ú"
-acute 'y' = "ý"
-acute 'C' = "Ć"
-acute 'c' = "ć"
-acute 'L' = "Ĺ"
-acute 'l' = "ĺ"
-acute 'N' = "Ń"
-acute 'n' = "ń"
-acute 'R' = "Ŕ"
-acute 'r' = "ŕ"
-acute 'S' = "Ś"
-acute 's' = "ś"
-acute 'Z' = "Ź"
-acute 'z' = "ź"
-acute c   = [c]
-
-circ :: Char -> String
-circ 'A' = "Â"
-circ 'E' = "Ê"
-circ 'I' = "Î"
-circ 'O' = "Ô"
-circ 'U' = "Û"
-circ 'a' = "â"
-circ 'e' = "ê"
-circ 'i' = "î"
-circ 'o' = "ô"
-circ 'u' = "û"
-circ 'C' = "Ĉ"
-circ 'c' = "ĉ"
-circ 'G' = "Ĝ"
-circ 'g' = "ĝ"
-circ 'H' = "Ĥ"
-circ 'h' = "ĥ"
-circ 'J' = "Ĵ"
-circ 'j' = "ĵ"
-circ 'S' = "Ŝ"
-circ 's' = "ŝ"
-circ 'W' = "Ŵ"
-circ 'w' = "ŵ"
-circ 'Y' = "Ŷ"
-circ 'y' = "ŷ"
-circ c   = [c]
-
-tilde :: Char -> String
-tilde 'A' = "Ã"
-tilde 'a' = "ã"
-tilde 'O' = "Õ"
-tilde 'o' = "õ"
-tilde 'I' = "Ĩ"
-tilde 'i' = "ĩ"
-tilde 'U' = "Ũ"
-tilde 'u' = "ũ"
-tilde 'N' = "Ñ"
-tilde 'n' = "ñ"
-tilde c   = [c]
-
-umlaut :: Char -> String
-umlaut 'A' = "Ä"
-umlaut 'E' = "Ë"
-umlaut 'I' = "Ï"
-umlaut 'O' = "Ö"
-umlaut 'U' = "Ü"
-umlaut 'a' = "ä"
-umlaut 'e' = "ë"
-umlaut 'i' = "ï"
-umlaut 'o' = "ö"
-umlaut 'u' = "ü"
-umlaut c   = [c]
-
-hungarumlaut :: Char -> String
-hungarumlaut 'A' = "A̋"
-hungarumlaut 'E' = "E̋"
-hungarumlaut 'I' = "I̋"
-hungarumlaut 'O' = "Ő"
-hungarumlaut 'U' = "Ű"
-hungarumlaut 'Y' = "ӳ"
-hungarumlaut 'a' = "a̋"
-hungarumlaut 'e' = "e̋"
-hungarumlaut 'i' = "i̋"
-hungarumlaut 'o' = "ő"
-hungarumlaut 'u' = "ű"
-hungarumlaut 'y' = "ӳ"
-hungarumlaut c   = [c]
-
-dot :: Char -> String
-dot 'C' = "Ċ"
-dot 'c' = "ċ"
-dot 'E' = "Ė"
-dot 'e' = "ė"
-dot 'G' = "Ġ"
-dot 'g' = "ġ"
-dot 'I' = "İ"
-dot 'Z' = "Ż"
-dot 'z' = "ż"
-dot c   = [c]
-
-macron :: Char -> String
-macron 'A' = "Ā"
-macron 'E' = "Ē"
-macron 'I' = "Ī"
-macron 'O' = "Ō"
-macron 'U' = "Ū"
-macron 'a' = "ā"
-macron 'e' = "ē"
-macron 'i' = "ī"
-macron 'o' = "ō"
-macron 'u' = "ū"
-macron c   = [c]
-
-cedilla :: Char -> String
-cedilla 'c' = "ç"
-cedilla 'C' = "Ç"
-cedilla 's' = "ş"
-cedilla 'S' = "Ş"
-cedilla 't' = "ţ"
-cedilla 'T' = "Ţ"
-cedilla 'e' = "ȩ"
-cedilla 'E' = "Ȩ"
-cedilla 'h' = "ḩ"
-cedilla 'H' = "Ḩ"
-cedilla 'o' = "o̧"
-cedilla 'O' = "O̧"
-cedilla c   = [c]
-
-hacek :: Char -> String
-hacek 'A' = "Ǎ"
-hacek 'a' = "ǎ"
-hacek 'C' = "Č"
-hacek 'c' = "č"
-hacek 'D' = "Ď"
-hacek 'd' = "ď"
-hacek 'E' = "Ě"
-hacek 'e' = "ě"
-hacek 'G' = "Ǧ"
-hacek 'g' = "ǧ"
-hacek 'H' = "Ȟ"
-hacek 'h' = "ȟ"
-hacek 'I' = "Ǐ"
-hacek 'i' = "ǐ"
-hacek 'j' = "ǰ"
-hacek 'K' = "Ǩ"
-hacek 'k' = "ǩ"
-hacek 'L' = "Ľ"
-hacek 'l' = "ľ"
-hacek 'N' = "Ň"
-hacek 'n' = "ň"
-hacek 'O' = "Ǒ"
-hacek 'o' = "ǒ"
-hacek 'R' = "Ř"
-hacek 'r' = "ř"
-hacek 'S' = "Š"
-hacek 's' = "š"
-hacek 'T' = "Ť"
-hacek 't' = "ť"
-hacek 'U' = "Ǔ"
-hacek 'u' = "ǔ"
-hacek 'Z' = "Ž"
-hacek 'z' = "ž"
-hacek c   = [c]
-
-ogonek :: Char -> String
-ogonek 'a' = "ą"
-ogonek 'e' = "ę"
-ogonek 'o' = "ǫ"
-ogonek 'i' = "į"
-ogonek 'u' = "ų"
-ogonek 'A' = "Ą"
-ogonek 'E' = "Ę"
-ogonek 'I' = "Į"
-ogonek 'O' = "Ǫ"
-ogonek 'U' = "Ų"
-ogonek c   = [c]
-
-breve :: Char -> String
-breve 'A' = "Ă"
-breve 'a' = "ă"
-breve 'E' = "Ĕ"
-breve 'e' = "ĕ"
-breve 'G' = "Ğ"
-breve 'g' = "ğ"
-breve 'I' = "Ĭ"
-breve 'i' = "ĭ"
-breve 'O' = "Ŏ"
-breve 'o' = "ŏ"
-breve 'U' = "Ŭ"
-breve 'u' = "ŭ"
-breve c   = [c]
-
-toksToString :: [Tok] -> String
-toksToString = T.unpack . untokenize
-
-mathDisplay :: String -> Inlines
-mathDisplay = displayMath . trim
-
-mathInline :: String -> Inlines
-mathInline = math . trim
+mathInline :: Text -> Inlines
+mathInline = math . trimMath
 
 dollarsMath :: PandocMonad m => LP m Inlines
 dollarsMath = do
   symbol '$'
   display <- option False (True <$ symbol '$')
-  contents <- trim . toksToString <$>
-               many (notFollowedBy (symbol '$') >> anyTok)
-  if display
-     then do
-       mathDisplay contents <$ try (symbol '$' >> symbol '$')
-        <|> (guard (null contents) >> return (mathInline ""))
-     else mathInline contents <$ (symbol '$')
+  (do contents <- try $ untokenize <$> pDollarsMath 0
+      if display
+         then (mathDisplay contents <$ symbol '$')
+         else return $ mathInline contents)
+   <|> (guard display >> return (mathInline ""))
+
+-- Int is number of embedded groupings
+pDollarsMath :: PandocMonad m => Int -> LP m [Tok]
+pDollarsMath n = do
+  tk@(Tok _ toktype t) <- anyTok
+  case toktype of
+       Symbol | t == "$"
+              , n == 0 -> return []
+              | t == "\\" -> do
+                  tk' <- anyTok
+                  ((tk :) . (tk' :)) <$> pDollarsMath n
+              | t == "{" -> (tk :) <$> pDollarsMath (n+1)
+              | t == "}" ->
+                if n > 0
+                then (tk :) <$> pDollarsMath (n-1)
+                else mzero
+       _ -> (tk :) <$> pDollarsMath n
 
 -- citations
 
@@ -1028,7 +659,7 @@ simpleCiteArgs :: PandocMonad m => LP m [Citation]
 simpleCiteArgs = try $ do
   first  <- optionMaybe $ toList <$> opt
   second <- optionMaybe $ toList <$> opt
-  keys <- try $ bgroup *> (manyTill citationLabel egroup)
+  keys <- try $ bgroup *> manyTill citationLabel egroup
   let (pre, suf) = case (first  , second ) of
         (Just s , Nothing) -> (mempty, s )
         (Just s , Just t ) -> (s , t )
@@ -1042,20 +673,34 @@ simpleCiteArgs = try $ do
                         }
   return $ addPrefix pre $ addSuffix suf $ map conv keys
 
-citationLabel :: PandocMonad m => LP m String
+citationLabel :: PandocMonad m => LP m Text
 citationLabel  = do
-  optional sp
-  toksToString <$>
+  sp
+  untokenize <$>
     (many1 (satisfyTok isWordTok <|> symbolIn bibtexKeyChar)
-          <* optional sp
+          <* sp
           <* optional (symbol ',')
-          <* optional sp)
-  where bibtexKeyChar = ".:;?!`'()/*@_+=-[]" :: [Char]
+          <* sp)
+  where bibtexKeyChar = ".:;?!`'()/*@_+=-&[]" :: [Char]
 
 cites :: PandocMonad m => CitationMode -> Bool -> LP m [Citation]
 cites mode multi = try $ do
   cits <- if multi
-             then many1 simpleCiteArgs
+             then do
+               multiprenote <- optionMaybe $ toList <$> paropt
+               multipostnote <- optionMaybe $ toList <$> paropt
+               let (pre, suf) = case (multiprenote, multipostnote) of
+                     (Just s , Nothing) -> (mempty, s)
+                     (Nothing , Just t) -> (mempty, t)
+                     (Just s , Just t ) -> (s, t)
+                     _                  -> (mempty, mempty)
+               tempCits <- many1 simpleCiteArgs
+               case tempCits of
+                 (k:ks) -> case ks of
+                             (_:_) -> return $ ((addMprenote pre k):init ks) ++
+                                                 [addMpostnote suf (last ks)]
+                             _ -> return [addMprenote pre (addMpostnote suf k)]
+                 _ -> return [[]]
              else count 1 simpleCiteArgs
   let cs = concat cits
   return $ case mode of
@@ -1063,11 +708,22 @@ cites mode multi = try $ do
                              (c:rest) -> c {citationMode = mode} : rest
                              []       -> []
         _            -> map (\a -> a {citationMode = mode}) cs
+  where mprenote (k:ks) = (k:ks) ++ [Space]
+        mprenote _ = mempty
+        mpostnote (k:ks) = [Str ",", Space] ++ (k:ks)
+        mpostnote _ = mempty
+        addMprenote mpn (k:ks) =
+          let mpnfinal = case citationPrefix k of
+                           (_:_) -> mprenote mpn
+                           _ -> mpn
+          in addPrefix mpnfinal (k:ks)
+        addMprenote _ _ = []
+        addMpostnote = addSuffix . mpostnote
 
-citation :: PandocMonad m => String -> CitationMode -> Bool -> LP m Inlines
+citation :: PandocMonad m => Text -> CitationMode -> Bool -> LP m Inlines
 citation name mode multi = do
   (c,raw) <- withRaw $ cites mode multi
-  return $ cite c (rawInline "latex" $ "\\" ++ name ++ (toksToString raw))
+  return $ cite c (rawInline "latex" $ "\\" <> name <> untokenize raw)
 
 handleCitationPart :: Inlines -> [Citation]
 handleCitationPart ils =
@@ -1091,7 +747,7 @@ complexNatbibCitation mode = try $ do
   case cs of
        []       -> mzero
        (c:cits) -> return $ cite (c{ citationMode = mode }:cits)
-                      (rawInline "latex" $ "\\citetext" ++ toksToString raw)
+                      (rawInline "latex" $ "\\citetext" <> untokenize raw)
 
 inNote :: Inlines -> Inlines
 inNote ils =
@@ -1101,8 +757,9 @@ inlineCommand' :: PandocMonad m => LP m Inlines
 inlineCommand' = try $ do
   Tok _ (CtrlSeq name) cmd <- anyControlSeq
   guard $ name /= "begin" && name /= "end"
-  star <- option "" ("*" <$ symbol '*' <* optional sp)
-  let name' = name <> star
+  star <- option "" ("*" <$ symbol '*' <* sp)
+  overlay <- option "" overlaySpecification
+  let name' = name <> star <> overlay
   let names = ordNub [name', name] -- check non-starred as fallback
   let raw = do
        guard $ isInlineCommand name || not (isBlockCommand name)
@@ -1111,83 +768,47 @@ inlineCommand' = try $ do
          <|> ignore rawcommand
   lookupListDefault raw names inlineCommands
 
+
 tok :: PandocMonad m => LP m Inlines
-tok = grouped inline <|> inlineCommand' <|> singleChar'
+tok = try $ spaces >> grouped inline <|> inlineCommand' <|> singleChar'
   where singleChar' = do
           Tok _ _ t <- singleChar
-          return (str (T.unpack t))
-
-singleChar :: PandocMonad m => LP m Tok
-singleChar = try $ do
-  Tok (lin,col) toktype t <- satisfyTok (tokTypeIn [Word, Symbol])
-  guard $ not $ toktype == Symbol &&
-                T.any (`Set.member` specialChars) t
-  if T.length t > 1
-     then do
-       let (t1, t2) = (T.take 1 t, T.drop 1 t)
-       inp <- getInput
-       setInput $ (Tok (lin, col + 1) toktype t2) : inp
-       return $ Tok (lin,col) toktype t1
-     else return $ Tok (lin,col) toktype t
+          return $ str t
 
 opt :: PandocMonad m => LP m Inlines
-opt = bracketed inline
+opt = bracketed inline <|> (str <$> rawopt)
 
-rawopt :: PandocMonad m => LP m Text
-rawopt = do
-  inner <- untokenize <$> bracketedToks
-  optional sp
-  return $ "[" <> inner <> "]"
-
-skipopts :: PandocMonad m => LP m ()
-skipopts = skipMany rawopt
-
--- opts in angle brackets are used in beamer
-rawangle :: PandocMonad m => LP m ()
-rawangle = try $ do
-  symbol '<'
-  () <$ manyTill anyTok (symbol '>')
-
-skipangles :: PandocMonad m => LP m ()
-skipangles = skipMany rawangle
-
-ignore :: (Monoid a, PandocMonad m) => String -> ParserT s u m a
-ignore raw = do
-  pos <- getPosition
-  report $ SkippedContent raw pos
-  return mempty
-
-withRaw :: PandocMonad m => LP m a -> LP m (a, [Tok])
-withRaw parser = do
-  inp <- getInput
-  result <- parser
-  nxt <- option (Tok (0,0) Word "") (lookAhead anyTok)
-  let raw = takeWhile (/= nxt) inp
-  return (result, raw)
+paropt :: PandocMonad m => LP m Inlines
+paropt = parenWrapped inline
 
 inBrackets :: Inlines -> Inlines
 inBrackets x = str "[" <> x <> str "]"
 
-unescapeURL :: String -> String
-unescapeURL ('\\':x:xs) | isEscapable x = x:unescapeURL xs
-  where isEscapable c = c `elem` ("#$%&~_^\\{}" :: String)
-unescapeURL (x:xs) = x:unescapeURL xs
-unescapeURL [] = ""
+unescapeURL :: Text -> Text
+unescapeURL = T.concat . go . T.splitOn "\\"
+  where
+    isEscapable c = c `elemText` "#$%&~_^\\{}"
+    go (x:xs) = x : map unescapeInterior xs
+    go []     = []
+    unescapeInterior t
+      | Just (c, _) <- T.uncons t
+      , isEscapable c = t
+      | otherwise = "\\" <> t
 
 mathEnvWith :: PandocMonad m
             => (Inlines -> a) -> Maybe Text -> Text -> LP m a
 mathEnvWith f innerEnv name = f . mathDisplay . inner <$> mathEnv name
    where inner x = case innerEnv of
                         Nothing -> x
-                        Just y  -> "\\begin{" ++ T.unpack y ++ "}\n" ++ x ++
-                                   "\\end{" ++ T.unpack y ++ "}"
+                        Just y  -> "\\begin{" <> y <> "}\n" <> x <>
+                                   "\\end{" <> y <> "}"
 
-mathEnv :: PandocMonad m => Text -> LP m String
+mathEnv :: PandocMonad m => Text -> LP m Text
 mathEnv name = do
   skipopts
   optional blankline
   res <- manyTill anyTok (end_ name)
-  return $ stripTrailingNewlines $ T.unpack $ untokenize res
+  return $ stripTrailingNewlines $ untokenize res
 
 inlineEnvironment :: PandocMonad m => LP m Inlines
 inlineEnvironment = try $ do
@@ -1211,10 +832,16 @@ inlineEnvironments = M.fromList [
   , ("align*", mathEnvWith id (Just "aligned") "align*")
   , ("alignat", mathEnvWith id (Just "aligned") "alignat")
   , ("alignat*", mathEnvWith id (Just "aligned") "alignat*")
+  , ("dmath", mathEnvWith id Nothing "dmath")
+  , ("dmath*", mathEnvWith id Nothing "dmath*")
+  , ("dgroup", mathEnvWith id (Just "aligned") "dgroup")
+  , ("dgroup*", mathEnvWith id (Just "aligned") "dgroup*")
+  , ("darray", mathEnvWith id (Just "aligned") "darray")
+  , ("darray*", mathEnvWith id (Just "aligned") "darray*")
   ]
 
 inlineCommands :: PandocMonad m => M.Map Text (LP m Inlines)
-inlineCommands = M.fromList $
+inlineCommands = M.union inlineLanguageCommands $ M.fromList
   [ ("emph", extractSpaces emph <$> tok)
   , ("textit", extractSpaces emph <$> tok)
   , ("textsl", extractSpaces emph <$> tok)
@@ -1224,8 +851,8 @@ inlineCommands = M.fromList $
   , ("textrm", extractSpaces (spanWith ("",["roman"],[])) <$> tok)
   , ("textup", extractSpaces (spanWith ("",["upright"],[])) <$> tok)
   , ("texttt", ttfamily)
-  , ("textenglish", spanWith ("",[],[("lang","en")]) <$> tok)
   , ("sout", extractSpaces strikeout <$> tok)
+  , ("alert", skipopts >> spanWith ("",["alert"],[]) <$> tok) -- beamer
   , ("lq", return (str "‘"))
   , ("rq", return (str "’"))
   , ("textquoteleft", return (str "‘"))
@@ -1239,22 +866,25 @@ inlineCommands = M.fromList $
   , ("slash", lit "/")
   , ("textbf", extractSpaces strong <$> tok)
   , ("textnormal", extractSpaces (spanWith ("",["nodecor"],[])) <$> tok)
+  , ("underline", underline <$> tok)
   , ("ldots", lit "…")
   , ("vdots", lit "\8942")
   , ("dots", lit "…")
   , ("mdots", lit "…")
   , ("sim", lit "~")
-  , ("textgreek", tok)
   , ("sep", lit ",")
   , ("label", rawInlineOr "label" dolabel)
   , ("ref", rawInlineOr "ref" $ doref "ref")
   , ("cref", rawInlineOr "cref" $ doref "ref")       -- from cleveref.sty
   , ("vref", rawInlineOr "vref" $ doref "ref+page")  -- from varioref.sty
   , ("eqref", rawInlineOr "eqref" $ doref "eqref")   -- from amsmath.sty
-  , ("(", mathInline . toksToString <$> manyTill anyTok (controlSeq ")"))
-  , ("[", mathDisplay . toksToString <$> manyTill anyTok (controlSeq "]"))
-  , ("ensuremath", mathInline . toksToString <$> braced)
-  , ("texorpdfstring", (\_ x -> x) <$> tok <*> tok)
+  , ("mbox", rawInlineOr "mbox" $ processHBox <$> tok)
+  , ("hbox", rawInlineOr "hbox" $ processHBox <$> tok)
+  , ("lettrine", rawInlineOr "lettrine" $ lettrine)
+  , ("(", mathInline . untokenize <$> manyTill anyTok (controlSeq ")"))
+  , ("[", mathDisplay . untokenize <$> manyTill anyTok (controlSeq "]"))
+  , ("ensuremath", mathInline . untokenize <$> braced)
+  , ("texorpdfstring", const <$> tok <*> tok)
   , ("P", lit "¶")
   , ("S", lit "§")
   , ("$", lit "$")
@@ -1264,16 +894,24 @@ inlineCommands = M.fromList $
   , ("_", lit "_")
   , ("{", lit "{")
   , ("}", lit "}")
+  , ("qed", lit "\a0\x25FB")
   -- old TeX commands
   , ("em", extractSpaces emph <$> inlines)
   , ("it", extractSpaces emph <$> inlines)
   , ("sl", extractSpaces emph <$> inlines)
   , ("bf", extractSpaces strong <$> inlines)
+  , ("tt", code . stringify . toList <$> inlines)
   , ("rm", inlines)
   , ("itshape", extractSpaces emph <$> inlines)
   , ("slshape", extractSpaces emph <$> inlines)
   , ("scshape", extractSpaces smallcaps <$> inlines)
   , ("bfseries", extractSpaces strong <$> inlines)
+  , ("MakeUppercase", makeUppercase <$> tok)
+  , ("MakeTextUppercase", makeUppercase <$> tok) -- textcase
+  , ("uppercase", makeUppercase <$> tok)
+  , ("MakeLowercase", makeLowercase <$> tok)
+  , ("MakeTextLowercase", makeLowercase <$> tok)
+  , ("lowercase", makeLowercase <$> tok)
   , ("/", pure mempty) -- italic correction
   , ("aa", lit "å")
   , ("AA", lit "Å")
@@ -1291,23 +929,35 @@ inlineCommands = M.fromList $
   , ("copyright", lit "©")
   , ("textasciicircum", lit "^")
   , ("textasciitilde", lit "~")
-  , ("H", accent '\779' hungarumlaut)
-  , ("`", accent '`' grave)
-  , ("'", accent '\'' acute)
-  , ("^", accent '^' circ)
-  , ("~", accent '~' tilde)
-  , ("\"", accent '\776' umlaut)
-  , (".", accent '\775' dot)
-  , ("=", accent '\772' macron)
-  , ("c", accent '\807' cedilla)
-  , ("v", accent 'ˇ' hacek)
-  , ("u", accent '\774' breve)
-  , ("k", accent '\808' ogonek)
-  , ("textogonekcentered", accent '\808' ogonek)
-  , ("i", lit "i")
+  , ("H", accent '\779' Nothing) -- hungarumlaut
+  , ("`", accent '\768' (Just '`')) -- grave
+  , ("'", accent '\769' (Just '\'')) -- acute
+  , ("^", accent '\770' (Just '^')) -- circ
+  , ("~", accent '\771' (Just '~')) -- tilde
+  , ("\"", accent '\776' Nothing) -- umlaut
+  , (".", accent '\775' Nothing) -- dot
+  , ("=", accent '\772' Nothing) -- macron
+  , ("|", accent '\781' Nothing) -- vertical line above
+  , ("b", accent '\817' Nothing) -- macron below
+  , ("c", accent '\807' Nothing) -- cedilla
+  , ("G", accent '\783' Nothing) -- doublegrave
+  , ("h", accent '\777' Nothing) -- hookabove
+  , ("d", accent '\803' Nothing) -- dotbelow
+  , ("f", accent '\785' Nothing)  -- inverted breve
+  , ("r", accent '\778' Nothing)  -- ringabove
+  , ("t", accent '\865' Nothing)  -- double inverted breve
+  , ("U", accent '\782' Nothing)  -- double vertical line above
+  , ("v", accent '\780' Nothing) -- hacek
+  , ("u", accent '\774' Nothing) -- breve
+  , ("k", accent '\808' Nothing) -- ogonek
+  , ("textogonekcentered", accent '\808' Nothing) -- ogonek
+  , ("i", lit "ı")  -- dotless i
+  , ("j", lit "ȷ")  -- dotless j
+  , ("newtie", accent '\785' Nothing) -- inverted breve
+  , ("textcircled", accent '\8413' Nothing) -- combining circle
   , ("\\", linebreak <$ (do inTableCell <- sInTableCell <$> getState
                             guard $ not inTableCell
-                            optional (bracketed inline)
+                            optional opt
                             spaces))
   , (",", lit "\8198")
   , ("@", pure mempty)
@@ -1318,21 +968,32 @@ inlineCommands = M.fromList $
   , ("bar", lit "|")
   , ("textless", lit "<")
   , ("textgreater", lit ">")
-  , ("thanks", note <$> grouped block)
-  , ("footnote", note <$> grouped block)
+  , ("thanks", skipopts >> note <$> grouped block)
+  , ("footnote", skipopts >> note <$> grouped block)
+  , ("passthrough", tok) -- \passthrough macro used by latex writer
+                         -- for listings
   , ("verb", doverb)
   , ("lstinline", dolstinline)
+  , ("mintinline", domintinline)
   , ("Verb", doverb)
-  , ("url", ((unescapeURL . T.unpack . untokenize) <$> braced) >>= \url ->
-                  pure (link url "" (str url)))
-  , ("href", (unescapeURL . toksToString <$>
-                 braced <* optional sp) >>= \url ->
-                   tok >>= \lab -> pure (link url "" lab))
+  , ("url", (\url -> link url "" (str url)) . unescapeURL . untokenize <$>
+                  bracedUrl)
+  , ("nolinkurl", code . unescapeURL . untokenize <$> bracedUrl)
+  , ("href", do url <- bracedUrl
+                sp
+                link (unescapeURL $ untokenize url) "" <$> tok)
   , ("includegraphics", do options <- option [] keyvals
-                           src <- unescapeURL . T.unpack .
-                                    removeDoubleQuotes . untokenize <$> braced
-                           mkImage options src)
-  , ("enquote", enquote)
+                           src <- braced
+                           mkImage options . unescapeURL . removeDoubleQuotes $
+                               untokenize src)
+  , ("enquote*", enquote True Nothing)
+  , ("enquote", enquote False Nothing)
+  -- foreignquote is supposed to use native quote marks
+  , ("foreignquote*", braced >>= enquote True . Just . untokenize)
+  , ("foreignquote", braced >>= enquote False . Just . untokenize)
+  -- hypehnquote uses regular quotes
+  , ("hyphenquote*", braced >>= enquote True . Just . untokenize)
+  , ("hyphenquote", braced >>= enquote False . Just . untokenize)
   , ("figurename", doTerm Translations.Figure)
   , ("prefacename", doTerm Translations.Preface)
   , ("refname", doTerm Translations.References)
@@ -1386,7 +1047,7 @@ inlineCommands = M.fromList $
   , ("footcitetexts", inNote <$> citation "footcitetexts" NormalCitation True)
   , ("Autocite", citation "Autocite" NormalCitation False)
   , ("Smartcite", citation "Smartcite" NormalCitation False)
-  , ("Footcite", citation "Footcite" NormalCitation False)
+  , ("Footcite", inNote <$> citation "Footcite" NormalCitation False)
   , ("Parencite", citation "Parencite" NormalCitation False)
   , ("Supercite", citation "Supercite" NormalCitation False)
   , ("Footcitetext", inNote <$> citation "Footcitetext" NormalCitation False)
@@ -1399,12 +1060,12 @@ inlineCommands = M.fromList $
   , ("Textcites", citation "Textcites" AuthorInText True)
   , ("Cites", citation "Cites" NormalCitation True)
   , ("Autocites", citation "Autocites" NormalCitation True)
-  , ("Footcites", citation "Footcites" NormalCitation True)
+  , ("Footcites", inNote <$> citation "Footcites" NormalCitation True)
   , ("Parencites", citation "Parencites" NormalCitation True)
   , ("Supercites", citation "Supercites" NormalCitation True)
   , ("Footcitetexts", inNote <$> citation "Footcitetexts" NormalCitation True)
   , ("citetext", complexNatbibCitation NormalCitation)
-  , ("citeauthor", (try (tok *> optional sp *> controlSeq "citetext") *>
+  , ("citeauthor", (try (tok *> sp *> controlSeq "citetext") *>
                         complexNatbibCitation AuthorInText)
                    <|> citation "citeauthor" AuthorInText False)
   , ("nocite", mempty <$ (citation "nocite" NormalCitation False >>=
@@ -1437,6 +1098,7 @@ inlineCommands = M.fromList $
   , ("acsp", doAcronymPlural "abbrv")
   -- siuntix
   , ("SI", dosiunitx)
+  , ("SIRange", doSIRange)
   -- hyphenat
   , ("bshyp", lit "\\\173")
   , ("fshyp", lit "/\173")
@@ -1463,25 +1125,90 @@ inlineCommands = M.fromList $
   -- biblatex misc
   , ("RN", romanNumeralUpper)
   , ("Rn", romanNumeralLower)
+  -- babel
+  , ("foreignlanguage", foreignlanguage)
+  -- include
+  , ("input", rawInlineOr "input" $ include "input")
+  -- soul package
+  , ("ul", underline <$> tok)
+  -- ulem package
+  , ("uline", underline <$> tok)
+  -- plain tex stuff that should just be passed through as raw tex
+  , ("ifdim", ifdim)
   ]
+
+accent :: PandocMonad m => Char -> Maybe Char -> LP m Inlines
+accent combiningAccent fallBack = try $ do
+  ils <- tok
+  case toList ils of
+       (Str (T.uncons -> Just (x, xs)) : ys) -> return $ fromList $
+         -- try to normalize to the combined character:
+         Str (Normalize.normalize Normalize.NFC
+               (T.pack [x, combiningAccent]) <> xs) : ys
+       [Space]           -> return $ str $ T.singleton $ fromMaybe combiningAccent fallBack
+       []                -> return $ str $ T.singleton $ fromMaybe combiningAccent fallBack
+       _                 -> return ils
+
+
+lettrine :: PandocMonad m => LP m Inlines
+lettrine = do
+  optional opt
+  x <- tok
+  y <- tok
+  return $ extractSpaces (spanWith ("",["lettrine"],[])) x <> smallcaps y
+
+ifdim :: PandocMonad m => LP m Inlines
+ifdim = do
+  contents <- manyTill anyTok (controlSeq "fi")
+  return $ rawInline "latex" $ "\\ifdim" <> untokenize contents <> "\\fi"
+
+makeUppercase :: Inlines -> Inlines
+makeUppercase = fromList . walk (alterStr T.toUpper) . toList
+
+makeLowercase :: Inlines -> Inlines
+makeLowercase = fromList . walk (alterStr T.toLower) . toList
+
+alterStr :: (Text -> Text) -> Inline -> Inline
+alterStr f (Str xs) = Str (f xs)
+alterStr _ x = x
+
+foreignlanguage :: PandocMonad m => LP m Inlines
+foreignlanguage = do
+  babelLang <- untokenize <$> braced
+  case babelLangToBCP47 babelLang of
+       Just lang -> spanWith ("", [], [("lang",  renderLang lang)]) <$> tok
+       _ -> tok
+
+inlineLanguageCommands :: PandocMonad m => M.Map Text (LP m Inlines)
+inlineLanguageCommands = M.fromList $ mk <$> M.toList polyglossiaLangToBCP47
+  where
+    mk (polyglossia, bcp47Func) =
+      ("text" <> polyglossia, inlineLanguage bcp47Func)
+
+inlineLanguage :: PandocMonad m => (Text -> Lang) -> LP m Inlines
+inlineLanguage bcp47Func = do
+  o <- option "" $ T.filter (\c -> c /= '[' && c /= ']')
+                <$> rawopt
+  let lang = renderLang $ bcp47Func o
+  extractSpaces (spanWith ("", [], [("lang", lang)])) <$> tok
 
 hyperlink :: PandocMonad m => LP m Inlines
 hyperlink = try $ do
-  src <- toksToString <$> braced
+  src <- untokenize <$> braced
   lab <- tok
-  return $ link ('#':src) "" lab
+  return $ link ("#" <> src) "" lab
 
 hypertargetBlock :: PandocMonad m => LP m Blocks
 hypertargetBlock = try $ do
-  ref <- toksToString <$> braced
+  ref <- untokenize <$> braced
   bs <- grouped block
   case toList bs of
        [Header 1 (ident,_,_) _] | ident == ref -> return bs
-       _ -> return $ divWith (ref, [], []) bs
+       _                        -> return $ divWith (ref, [], []) bs
 
 hypertargetInline :: PandocMonad m => LP m Inlines
 hypertargetInline = try $ do
-  ref <- toksToString <$> braced
+  ref <- untokenize <$> braced
   ils <- grouped inline
   return $ spanWith (ref, [], []) ils
 
@@ -1491,7 +1218,7 @@ romanNumeralUpper =
 
 romanNumeralLower :: (PandocMonad m) => LP m Inlines
 romanNumeralLower =
-  str . map toLower . toRomanNumeral <$> romanNumeralArg
+  str . T.toLower . toRomanNumeral <$> romanNumeralArg
 
 romanNumeralArg :: (PandocMonad m) => LP m Int
 romanNumeralArg = spaces *> (parser <|> inBraces)
@@ -1507,19 +1234,19 @@ romanNumeralArg = spaces *> (parser <|> inBraces)
       Tok _ Word s <- satisfyTok isWordTok
       let (digits, rest) = T.span isDigit s
       unless (T.null rest) $
-        fail "Non-digits in argument to \\Rn or \\RN"
-      safeRead $ T.unpack digits
+        Prelude.fail "Non-digits in argument to \\Rn or \\RN"
+      safeRead digits
 
 newToggle :: (Monoid a, PandocMonad m) => [Tok] -> LP m a
 newToggle name = do
   updateState $ \st ->
-    st{ sToggles = M.insert (toksToString name) False (sToggles st) }
+    st{ sToggles = M.insert (untokenize name) False (sToggles st) }
   return mempty
 
 setToggle :: (Monoid a, PandocMonad m) => Bool -> [Tok] -> LP m a
 setToggle on name = do
   updateState $ \st ->
-    st{ sToggles = M.adjust (const on) (toksToString name) (sToggles st) }
+    st{ sToggles = M.adjust (const on) (untokenize name) (sToggles st) }
   return mempty
 
 ifToggle :: PandocMonad m => LP m ()
@@ -1531,7 +1258,7 @@ ifToggle = do
   no <- braced
   toggles <- sToggles <$> getState
   inp <- getInput
-  let name' = toksToString name
+  let name' = untokenize name
   case M.lookup name' toggles of
                 Just True  -> setInput (yes ++ inp)
                 Just False -> setInput (no  ++ inp)
@@ -1554,11 +1281,11 @@ ifstrequal = do
      else getInput >>= setInput . (ifnotequal ++)
   return mempty
 
-coloredInline :: PandocMonad m => String -> LP m Inlines
+coloredInline :: PandocMonad m => Text -> LP m Inlines
 coloredInline stylename = do
   skipopts
   color <- braced
-  spanWith ("",[],[("style",stylename ++ ": " ++ toksToString color)]) <$> tok
+  spanWith ("",[],[("style",stylename <> ": " <> untokenize color)]) <$> tok
 
 ttfamily :: PandocMonad m => LP m Inlines
 ttfamily = (code . stringify . toList) <$> tok
@@ -1570,25 +1297,13 @@ rawInlineOr name' fallback = do
      then rawInline "latex" <$> getRawCommand name' ("\\" <> name')
      else fallback
 
-getRawCommand :: PandocMonad m => Text -> Text -> LP m String
-getRawCommand name txt = do
-  (_, rawargs) <- withRaw $
-      case name of
-           "write" -> do
-             void $ satisfyTok isWordTok -- digits
-             void braced
-           "titleformat" -> do
-             void braced
-             skipopts
-             void $ count 4 braced
-           "def" -> do
-             void $ manyTill anyTok braced
-           _ -> do
-             skipangles
-             skipopts
-             option "" (try (optional sp *> dimenarg))
-             void $ many braced
-  return $ T.unpack (txt <> untokenize rawargs)
+processHBox :: Inlines -> Inlines
+processHBox = walk convert
+  where
+    convert Space     = Str $ T.singleton $ chr 160 -- non-breakable space
+    convert SoftBreak = Str $ T.singleton $ chr 160 -- non-breakable space
+    convert LineBreak = Str ""
+    convert x         = x
 
 isBlockCommand :: Text -> Bool
 isBlockCommand s =
@@ -1597,13 +1312,7 @@ isBlockCommand s =
 
 treatAsBlock :: Set.Set Text
 treatAsBlock = Set.fromList
-   [ "let", "def"
-   , "newcommand", "renewcommand"
-   , "newenvironment", "renewenvironment"
-   , "providecommand", "provideenvironment"
-     -- newcommand, etc. should be parsed by macroDef, but we need this
-     -- here so these aren't parsed as inline commands to ignore
-   , "special", "pdfannot", "pdfstringdef"
+   [ "special", "pdfannot", "pdfstringdef"
    , "bibliographystyle"
    , "maketitle", "makeindex", "makeglossary"
    , "addcontentsline", "addtocontents", "addtocounter"
@@ -1617,6 +1326,9 @@ treatAsBlock = Set.fromList
    , "clearpage"
    , "pagebreak"
    , "titleformat"
+   , "listoffigures"
+   , "listoftables"
+   , "write"
    ]
 
 isInlineCommand :: Text -> Bool
@@ -1635,24 +1347,32 @@ treatAsInline = Set.fromList
   , "pagebreak"
   ]
 
+label :: PandocMonad m => LP m ()
+label = do
+  controlSeq "label"
+  t <- braced
+  updateState $ \st -> st{ sLastLabel = Just $ untokenize t }
+
 dolabel :: PandocMonad m => LP m Inlines
 dolabel = do
   v <- braced
-  let refstr = toksToString v
+  let refstr = untokenize v
+  updateState $ \st ->
+    st{ sLastLabel = Just refstr }
   return $ spanWith (refstr,[],[("label", refstr)])
-    $ inBrackets $ str $ toksToString v
+    $ inBrackets $ str $ untokenize v
 
-doref :: PandocMonad m => String -> LP m Inlines
+doref :: PandocMonad m => Text -> LP m Inlines
 doref cls = do
   v <- braced
-  let refstr = toksToString v
+  let refstr = untokenize v
   return $ linkWith ("",[],[ ("reference-type", cls)
                            , ("reference", refstr)])
-                    ('#':refstr)
+                    ("#" <> refstr)
                     ""
                     (inBrackets $ str refstr)
 
-lookupListDefault :: (Show k, Ord k) => v -> [k] -> M.Map k v -> v
+lookupListDefault :: (Ord k) => v -> [k] -> M.Map k v -> v
 lookupListDefault d = (fromMaybe d .) . lookupList
   where lookupList l m = msum $ map (`M.lookup` m) l
 
@@ -1661,6 +1381,7 @@ inline = (mempty <$ comment)
      <|> (space  <$ whitespace)
      <|> (softbreak <$ endline)
      <|> word
+     <|> macroDef (rawInline "latex")
      <|> inlineCommand'
      <|> inlineEnvironment
      <|> inlineGroup
@@ -1676,11 +1397,11 @@ inline = (mempty <$ comment)
      <|> (str "\160" <$ symbol '~')
      <|> dollarsMath
      <|> (guardEnabled Ext_literate_haskell *> symbol '|' *> doLHSverb)
-     <|> (str . (:[]) <$> primEscape)
+     <|> (str . T.singleton <$> primEscape)
      <|> regularSymbol
-     <|> (do res <- symbolIn "#^'`\"[]"
+     <|> (do res <- symbolIn "#^'`\"[]&"
              pos <- getPosition
-             let s = T.unpack (untoken res)
+             let s = untoken res
              report $ ParsingUnescaped s pos
              return $ str s)
 
@@ -1689,28 +1410,15 @@ inlines = mconcat <$> many inline
 
 -- block elements:
 
-begin_ :: PandocMonad m => Text -> LP m ()
-begin_ t = (try $ do
-  controlSeq "begin"
-  spaces
-  txt <- untokenize <$> braced
-  guard (t == txt)) <?> ("\\begin{" ++ T.unpack t ++ "}")
-
-end_ :: PandocMonad m => Text -> LP m ()
-end_ t = (try $ do
-  controlSeq "end"
-  spaces
-  txt <- untokenize <$> braced
-  guard $ t == txt) <?> ("\\end{" ++ T.unpack t ++ "}")
-
 preamble :: PandocMonad m => LP m Blocks
-preamble = mempty <$ many preambleBlock
-  where preambleBlock =  spaces1
-                     <|> void include
-                     <|> void macroDef
-                     <|> void blockCommand
-                     <|> void braced
-                     <|> (notFollowedBy (begin_ "document") >> void anyTok)
+preamble = mconcat <$> many preambleBlock
+  where preambleBlock =  (mempty <$ spaces1)
+                     <|> macroDef (rawBlock "latex")
+                     <|> (mempty <$ blockCommand)
+                     <|> (mempty <$ braced)
+                     <|> (do notFollowedBy (begin_ "document")
+                             anyTok
+                             return mempty)
 
 paragraph :: PandocMonad m => LP m Blocks
 paragraph = do
@@ -1719,26 +1427,61 @@ paragraph = do
      then return mempty
      else return $ para x
 
-include :: PandocMonad m => LP m Blocks
-include = do
-  (Tok _ (CtrlSeq name) _) <-
-                    controlSeq "include" <|> controlSeq "input" <|>
-                    controlSeq "subfile" <|> controlSeq "usepackage"
-  skipMany $ bracketed inline -- skip options
-  fs <- (map trim . splitBy (==',') . T.unpack . untokenize) <$> braced
-  let fs' = if name == "usepackage"
-               then map (maybeAddExtension ".sty") fs
-               else map (maybeAddExtension ".tex") fs
-  dirs <- (splitBy (==':') . fromMaybe ".") <$> lookupEnv "TEXINPUTS"
-  mconcat <$> mapM (insertIncludedFile blocks (tokenize . T.pack) dirs) fs'
+rawBlockOr :: PandocMonad m => Text -> LP m Blocks -> LP m Blocks
+rawBlockOr name fallback = do
+  -- if raw_tex allowed, don't process
+  parseRaw <- extensionEnabled Ext_raw_tex <$> getOption readerExtensions
+  if parseRaw
+     then rawBlock "latex" <$> getRawCommand name ("\\" <> name)
+     else fallback
 
-maybeAddExtension :: String -> FilePath -> FilePath
-maybeAddExtension ext fp =
-  if null (takeExtension fp)
-     then addExtension fp ext
-     else fp
+doSubfile :: PandocMonad m => LP m Blocks
+doSubfile = do
+  skipMany opt
+  f <- T.unpack . removeDoubleQuotes . T.strip . untokenize <$> braced
+  oldToks <- getInput
+  setInput []
+  insertIncluded ".tex" f
+  bs <- blocks
+  eof
+  setInput oldToks
+  return bs
 
-addMeta :: PandocMonad m => ToMetaValue a => String -> a -> LP m ()
+include :: (PandocMonad m, Monoid a) => Text -> LP m a
+include name = do
+  skipMany opt
+  fs <- (map (T.unpack . removeDoubleQuotes . T.strip) . T.splitOn "," .
+         untokenize) <$> braced
+  let defaultExt | name == "usepackage" = ".sty"
+                 | otherwise            = ".tex"
+  mapM_ (insertIncluded defaultExt) fs
+  return mempty
+
+insertIncluded :: PandocMonad m
+               => FilePath
+               -> FilePath
+               -> LP m ()
+insertIncluded defaultExtension f' = do
+  let f = case takeExtension f' of
+                ".tex" -> f'
+                ".sty" -> f'
+                _      -> addExtension f' defaultExtension
+  dirs <- (map T.unpack . splitTextBy (==':') . fromMaybe ".") <$> lookupEnv "TEXINPUTS"
+  pos <- getPosition
+  containers <- getIncludeFiles <$> getState
+  when (T.pack f `elem` containers) $
+    throwError $ PandocParseError $ T.pack $ "Include file loop at " ++ show pos
+  updateState $ addIncludeFile $ T.pack f
+  mbcontents <- readFileFromDirs dirs f
+  contents <- case mbcontents of
+                   Just s -> return s
+                   Nothing -> do
+                     report $ CouldNotLoadIncludeFile (T.pack f) pos
+                     return ""
+  getInput >>= setInput . (tokenize f contents ++)
+  updateState dropLatestIncludeFile
+
+addMeta :: PandocMonad m => ToMetaValue a => Text -> a -> LP m ()
 addMeta field val = updateState $ \st ->
    st{ sMeta = addMetaField field val $ sMeta st }
 
@@ -1753,20 +1496,26 @@ authors = try $ do
   egroup
   addMeta "author" (map trimInlines auths)
 
-macroDef :: PandocMonad m => LP m Blocks
-macroDef = do
-  mempty <$ ((commandDef <|> environmentDef) <* doMacros 0)
+macroDef :: (PandocMonad m, Monoid a) => (Text -> a) -> LP m a
+macroDef constructor = do
+    (_, s) <- withRaw (commandDef <|> environmentDef)
+    (constructor (untokenize s) <$
+      guardDisabled Ext_latex_macros)
+     <|> return mempty
   where commandDef = do
           (name, macro') <- newcommand <|> letmacro <|> defmacro
           guardDisabled Ext_latex_macros <|>
            updateState (\s -> s{ sMacros = M.insert name macro' (sMacros s) })
         environmentDef = do
-          (name, macro1, macro2) <- newenvironment
-          guardDisabled Ext_latex_macros <|>
-            do updateState $ \s -> s{ sMacros =
-                M.insert name macro1 (sMacros s) }
-               updateState $ \s -> s{ sMacros =
-                M.insert ("end" <> name) macro2 (sMacros s) }
+          mbenv <- newenvironment
+          case mbenv of
+            Nothing -> return ()
+            Just (name, macro1, macro2) ->
+              guardDisabled Ext_latex_macros <|>
+                do updateState $ \s -> s{ sMacros =
+                    M.insert name macro1 (sMacros s) }
+                   updateState $ \s -> s{ sMacros =
+                    M.insert ("end" <> name) macro2 (sMacros s) }
         -- @\newenvironment{envname}[n-args][default]{begin}{end}@
         -- is equivalent to
         -- @\newcommand{\envname}[n-args][default]{begin}@
@@ -1775,103 +1524,121 @@ macroDef = do
 letmacro :: PandocMonad m => LP m (Text, Macro)
 letmacro = do
   controlSeq "let"
-  Tok _ (CtrlSeq name) _ <- anyControlSeq
-  optional $ symbol '='
-  spaces
-  contents <- braced <|> ((:[]) <$> (anyControlSeq <|> singleChar))
-  return (name, Macro ExpandWhenDefined 0 Nothing contents)
+  (name, contents) <- withVerbatimMode $ do
+    Tok _ (CtrlSeq name) _ <- anyControlSeq
+    optional $ symbol '='
+    spaces
+    -- we first parse in verbatim mode, and then expand macros,
+    -- because we don't want \let\foo\bar to turn into
+    -- \let\foo hello if we have previously \def\bar{hello}
+    contents <- bracedOrToken
+    return (name, contents)
+  contents' <- doMacros' 0 contents
+  return (name, Macro ExpandWhenDefined [] Nothing contents')
 
 defmacro :: PandocMonad m => LP m (Text, Macro)
-defmacro = try $ do
-  controlSeq "def"
-  Tok _ (CtrlSeq name) _ <- anyControlSeq
-  numargs <- option 0 $ argSeq 1
-  contents <- withVerbatimMode braced
-  return (name, Macro ExpandWhenUsed numargs Nothing contents)
+defmacro = try $
+  -- we use withVerbatimMode, because macros are to be expanded
+  -- at point of use, not point of definition
+  withVerbatimMode $ do
+    controlSeq "def"
+    Tok _ (CtrlSeq name) _ <- anyControlSeq
+    argspecs <- many (argspecArg <|> argspecPattern)
+    contents <- bracedOrToken
+    return (name, Macro ExpandWhenUsed argspecs Nothing contents)
 
--- Note: we don't yet support fancy things like #1.#2
-argSeq :: PandocMonad m => Int -> LP m Int
-argSeq n = do
+argspecArg :: PandocMonad m => LP m ArgSpec
+argspecArg = do
   Tok _ (Arg i) _ <- satisfyTok isArgTok
-  guard $ i == n
-  argSeq (n+1) <|> return n
+  return $ ArgNum i
 
-isArgTok :: Tok -> Bool
-isArgTok (Tok _ (Arg _) _) = True
-isArgTok _ = False
+argspecPattern :: PandocMonad m => LP m ArgSpec
+argspecPattern =
+  Pattern <$> many1 (satisfyTok (\(Tok _ toktype' txt) ->
+                              (toktype' == Symbol || toktype' == Word) &&
+                              (txt /= "{" && txt /= "\\" && txt /= "}")))
 
 newcommand :: PandocMonad m => LP m (Text, Macro)
 newcommand = do
   pos <- getPosition
   Tok _ (CtrlSeq mtype) _ <- controlSeq "newcommand" <|>
                              controlSeq "renewcommand" <|>
-                             controlSeq "providecommand"
-  optional $ symbol '*'
-  Tok _ (CtrlSeq name) txt <- withVerbatimMode $ anyControlSeq <|>
-    (symbol '{' *> spaces *> anyControlSeq <* spaces <* symbol '}')
-  spaces
-  numargs <- option 0 $ try bracketedNum
-  spaces
-  optarg <- option Nothing $ Just <$> try bracketedToks
-  spaces
-  contents <- withVerbatimMode braced
-  -- we use withVerbatimMode, because macros are to be expanded
-  -- at point of use, not point of definition
-  when (mtype == "newcommand") $ do
+                             controlSeq "providecommand" <|>
+                             controlSeq "DeclareMathOperator" <|>
+                             controlSeq "DeclareRobustCommand"
+  withVerbatimMode $ do
+    Tok _ (CtrlSeq name) txt <- do
+      optional (symbol '*')
+      anyControlSeq <|>
+        (symbol '{' *> spaces *> anyControlSeq <* spaces <* symbol '}')
+    spaces
+    numargs <- option 0 $ try bracketedNum
+    let argspecs = map ArgNum [1..numargs]
+    spaces
+    optarg <- option Nothing $ Just <$> try bracketedToks
+    spaces
+    contents' <- bracedOrToken
+    let contents =
+         case mtype of
+              "DeclareMathOperator" ->
+                 Tok pos (CtrlSeq "mathop") "\\mathop"
+                 : Tok pos Symbol "{"
+                 : Tok pos (CtrlSeq "mathrm") "\\mathrm"
+                 : Tok pos Symbol "{"
+                 : (contents' ++
+                   [ Tok pos Symbol "}", Tok pos Symbol "}" ])
+              _                     -> contents'
     macros <- sMacros <$> getState
     case M.lookup name macros of
-         Just _ -> report $ MacroAlreadyDefined (T.unpack txt) pos
-         Nothing -> return ()
-  return (name, Macro ExpandWhenUsed numargs optarg contents)
+        Just macro
+          | mtype == "newcommand" -> do
+              report $ MacroAlreadyDefined txt pos
+              return (name, macro)
+          | mtype == "providecommand" -> return (name, macro)
+        _ -> return (name, Macro ExpandWhenUsed argspecs optarg contents)
 
-newenvironment :: PandocMonad m => LP m (Text, Macro, Macro)
+newenvironment :: PandocMonad m => LP m (Maybe (Text, Macro, Macro))
 newenvironment = do
   pos <- getPosition
   Tok _ (CtrlSeq mtype) _ <- controlSeq "newenvironment" <|>
                              controlSeq "renewenvironment" <|>
                              controlSeq "provideenvironment"
-  optional $ symbol '*'
-  spaces
-  name <- untokenize <$> braced
-  spaces
-  numargs <- option 0 $ try bracketedNum
-  spaces
-  optarg <- option Nothing $ Just <$> try bracketedToks
-  spaces
-  startcontents <- withVerbatimMode braced
-  spaces
-  endcontents <- withVerbatimMode braced
-  when (mtype == "newenvironment") $ do
+  withVerbatimMode $ do
+    optional $ symbol '*'
+    spaces
+    name <- untokenize <$> braced
+    spaces
+    numargs <- option 0 $ try bracketedNum
+    spaces
+    optarg <- option Nothing $ Just <$> try bracketedToks
+    let argspecs = map (\i -> ArgNum i) [1..numargs]
+    startcontents <- spaces >> bracedOrToken
+    endcontents <- spaces >> bracedOrToken
     macros <- sMacros <$> getState
     case M.lookup name macros of
-         Just _ -> report $ MacroAlreadyDefined (T.unpack name) pos
-         Nothing -> return ()
-  return (name, Macro ExpandWhenUsed numargs optarg startcontents,
-             Macro ExpandWhenUsed 0 Nothing endcontents)
-
-bracketedToks :: PandocMonad m => LP m [Tok]
-bracketedToks = do
-  symbol '['
-  mconcat <$> manyTill (braced <|> (:[]) <$> anyTok) (symbol ']')
+         Just _
+           | mtype == "newenvironment" -> do
+               report $ MacroAlreadyDefined name pos
+               return Nothing
+           | mtype == "provideenvironment" ->
+               return Nothing
+         _ -> return $ Just (name,
+                      Macro ExpandWhenUsed argspecs optarg startcontents,
+                      Macro ExpandWhenUsed [] Nothing endcontents)
 
 bracketedNum :: PandocMonad m => LP m Int
 bracketedNum = do
   ds <- untokenize <$> bracketedToks
-  case safeRead (T.unpack ds) of
+  case safeRead ds of
        Just i -> return i
        _      -> return 0
 
-setCaption :: PandocMonad m => LP m Blocks
-setCaption = do
+setCaption :: PandocMonad m => LP m ()
+setCaption = try $ do
+  skipopts
   ils <- tok
-  mblabel <- option Nothing $
-               try $ spaces >> controlSeq "label" >> (Just <$> tok)
-  let ils' = case mblabel of
-                  Just lab -> ils <> spanWith
-                                ("",[],[("label", stringify lab)]) mempty
-                  Nothing  -> ils
-  updateState $ \st -> st{ sCaption = Just ils' }
-  return mempty
+  optional $ try $ spaces *> label
+  updateState $ \st -> st{ sCaption = Just ils }
 
 looseItem :: PandocMonad m => LP m Blocks
 looseItem = do
@@ -1880,37 +1647,49 @@ looseItem = do
   skipopts
   return mempty
 
-resetCaption :: PandocMonad m => LP m ()
-resetCaption = updateState $ \st -> st{ sCaption = Nothing }
+epigraph :: PandocMonad m => LP m Blocks
+epigraph = do
+  p1 <- grouped block
+  p2 <- grouped block
+  return $ divWith ("", ["epigraph"], []) (p1 <> p2)
 
-section :: PandocMonad m => Bool -> Attr -> Int -> LP m Blocks
-section starred (ident, classes, kvs) lvl = do
+resetCaption :: PandocMonad m => LP m ()
+resetCaption = updateState $ \st -> st{ sCaption   = Nothing
+                                      , sLastLabel = Nothing }
+
+section :: PandocMonad m => Attr -> Int -> LP m Blocks
+section (ident, classes, kvs) lvl = do
   skipopts
   contents <- grouped inline
   lab <- option ident $
           try (spaces >> controlSeq "label"
-               >> spaces >> toksToString <$> braced)
-  let classes' = if starred then "unnumbered" : classes else classes
-  unless starred $ do
+               >> spaces >> untokenize <$> braced)
+  when (lvl == 0) $
+    updateState $ \st -> st{ sHasChapters = True }
+  unless ("unnumbered" `elem` classes) $ do
     hn <- sLastHeaderNum <$> getState
-    let num = incrementHeaderNum lvl hn
-    updateState $ \st -> st{ sLastHeaderNum = num }
-    updateState $ \st -> st{ sLabels = M.insert lab
-                            [Str (renderHeaderNum num)]
-                            (sLabels st) }
-  attr' <- registerHeader (lab, classes', kvs) contents
+    hasChapters <- sHasChapters <$> getState
+    let lvl' = lvl + if hasChapters then 1 else 0
+    let num = incrementDottedNum lvl' hn
+    updateState $ \st -> st{ sLastHeaderNum = num
+                           , sLabels = M.insert lab
+                              [Str (renderDottedNum num)]
+                              (sLabels st) }
+  attr' <- registerHeader (lab, classes, kvs) contents
   return $ headerWith attr' lvl contents
 
 blockCommand :: PandocMonad m => LP m Blocks
 blockCommand = try $ do
   Tok _ (CtrlSeq name) txt <- anyControlSeq
   guard $ name /= "begin" && name /= "end"
-  star <- option "" ("*" <$ symbol '*' <* optional sp)
+  star <- option "" ("*" <$ symbol '*' <* sp)
   let name' = name <> star
   let names = ordNub [name', name]
   let rawDefiniteBlock = do
         guard $ isBlockCommand name
-        rawBlock "latex" <$> getRawCommand name (txt <> star)
+        rawcontents <- getRawCommand name (txt <> star)
+        (guardEnabled Ext_raw_tex >> return (rawBlock "latex" rawcontents))
+          <|> ignore rawcontents
   -- heuristic:  if it could be either block or inline, we
   -- treat it if block if we have a sequence of block
   -- commands followed by a newline.  But we stop if we
@@ -1922,7 +1701,10 @@ blockCommand = try $ do
         guard $ "start" `T.isPrefixOf` n
   let rawMaybeBlock = try $ do
         guard $ not $ isInlineCommand name
-        curr <- rawBlock "latex" <$> getRawCommand name (txt <> star)
+        rawcontents <- getRawCommand name (txt <> star)
+        curr <- (guardEnabled Ext_raw_tex >>
+                    return (rawBlock "latex" rawcontents))
+                   <|> ignore rawcontents
         rest <- many $ notFollowedBy startCommand *> blockCommand
         lookAhead $ blankline <|> startCommand
         return $ curr <> mconcat rest
@@ -1943,10 +1725,21 @@ closing = do
                   _ -> mempty
   return $ para (trimInlines contents) <> sigs
 
+parbox :: PandocMonad m => LP m Blocks
+parbox = try $ do
+  skipopts
+  braced -- size
+  oldInTableCell <- sInTableCell <$> getState
+  -- see #5711
+  updateState $ \st -> st{ sInTableCell = False }
+  res <- grouped block
+  updateState $ \st -> st{ sInTableCell = oldInTableCell }
+  return res
+
 blockCommands :: PandocMonad m => M.Map Text (LP m Blocks)
-blockCommands = M.fromList $
+blockCommands = M.fromList
    [ ("par", mempty <$ skipopts)
-   , ("parbox",  braced >> grouped blocks)
+   , ("parbox",  parbox)
    , ("title", mempty <$ (skipopts *>
                              (grouped inline >>= addMeta "title")
                          <|> (grouped block >>= addMeta "title")))
@@ -1956,26 +1749,35 @@ blockCommands = M.fromList $
    , ("address", mempty <$ (skipopts *> tok >>= addMeta "address"))
    , ("signature", mempty <$ (skipopts *> authors))
    , ("date", mempty <$ (skipopts *> tok >>= addMeta "date"))
-   -- Koma-script metadata commands
+   , ("newtheorem", newtheorem)
+   , ("theoremstyle", theoremstyle)
+   -- KOMA-Script metadata commands
+   , ("extratitle", mempty <$ (skipopts *> tok >>= addMeta "extratitle"))
+   , ("frontispiece", mempty <$ (skipopts *> tok >>= addMeta "frontispiece"))
+   , ("titlehead", mempty <$ (skipopts *> tok >>= addMeta "titlehead"))
+   , ("subject", mempty <$ (skipopts *> tok >>= addMeta "subject"))
+   , ("publishers", mempty <$ (skipopts *> tok >>= addMeta "publishers"))
+   , ("uppertitleback", mempty <$ (skipopts *> tok >>= addMeta "uppertitleback"))
+   , ("lowertitleback", mempty <$ (skipopts *> tok >>= addMeta "lowertitleback"))
    , ("dedication", mempty <$ (skipopts *> tok >>= addMeta "dedication"))
    -- sectioning
-   , ("part", section False nullAttr (-1))
-   , ("part*", section True nullAttr (-1))
-   , ("chapter", section False nullAttr 0)
-   , ("chapter*", section True ("",["unnumbered"],[]) 0)
-   , ("section", section False nullAttr 1)
-   , ("section*", section True ("",["unnumbered"],[]) 1)
-   , ("subsection", section False nullAttr 2)
-   , ("subsection*", section True ("",["unnumbered"],[]) 2)
-   , ("subsubsection", section False nullAttr 3)
-   , ("subsubsection*", section True ("",["unnumbered"],[]) 3)
-   , ("paragraph", section False nullAttr 4)
-   , ("paragraph*", section True ("",["unnumbered"],[]) 4)
-   , ("subparagraph", section False nullAttr 5)
-   , ("subparagraph*", section True ("",["unnumbered"],[]) 5)
+   , ("part", section nullAttr (-1))
+   , ("part*", section nullAttr (-1))
+   , ("chapter", section nullAttr 0)
+   , ("chapter*", section ("",["unnumbered"],[]) 0)
+   , ("section", section nullAttr 1)
+   , ("section*", section ("",["unnumbered"],[]) 1)
+   , ("subsection", section nullAttr 2)
+   , ("subsection*", section ("",["unnumbered"],[]) 2)
+   , ("subsubsection", section nullAttr 3)
+   , ("subsubsection*", section ("",["unnumbered"],[]) 3)
+   , ("paragraph", section nullAttr 4)
+   , ("paragraph*", section ("",["unnumbered"],[]) 4)
+   , ("subparagraph", section nullAttr 5)
+   , ("subparagraph*", section ("",["unnumbered"],[]) 5)
    -- beamer slides
-   , ("frametitle", section False nullAttr 3)
-   , ("framesubtitle", section False nullAttr 4)
+   , ("frametitle", section nullAttr 3)
+   , ("framesubtitle", section nullAttr 4)
    -- letters
    , ("opening", (para . trimInlines) <$> (skipopts *> tok))
    , ("closing", skipopts *> closing)
@@ -1995,13 +1797,15 @@ blockCommands = M.fromList $
    , ("item", looseItem)
    , ("documentclass", skipopts *> braced *> preamble)
    , ("centerline", (para . trimInlines) <$> (skipopts *> tok))
-   , ("caption", skipopts *> setCaption)
+   , ("caption", mempty <$ setCaption)
    , ("bibliography", mempty <$ (skipopts *> braced >>=
-         addMeta "bibliography" . splitBibs . toksToString))
+         addMeta "bibliography" . splitBibs . untokenize))
    , ("addbibresource", mempty <$ (skipopts *> braced >>=
-         addMeta "bibliography" . splitBibs . toksToString))
+         addMeta "bibliography" . splitBibs . untokenize))
+   , ("endinput", mempty <$ skipMany anyTok)
    -- includes
    , ("lstinputlisting", inputListing)
+   , ("inputminted", inputMinted)
    , ("graphicspath", graphicsPath)
    -- polyglossia
    , ("setdefaultlanguage", setDefaultLanguage)
@@ -2011,13 +1815,30 @@ blockCommands = M.fromList $
    -- LaTeX colors
    , ("textcolor", coloredBlock "color")
    , ("colorbox", coloredBlock "background-color")
+   -- csquotes
+   , ("blockquote", blockquote False Nothing)
+   , ("blockcquote", blockquote True Nothing)
+   , ("foreignblockquote", braced >>= blockquote False . Just . untokenize)
+   , ("foreignblockcquote", braced >>= blockquote True . Just . untokenize)
+   , ("hyphenblockquote", braced >>= blockquote False . Just . untokenize)
+   , ("hyphenblockcquote", braced >>= blockquote True . Just . untokenize)
+   -- include
+   , ("include", rawBlockOr "include" $ include "include")
+   , ("input", rawBlockOr "input" $ include "input")
+   , ("subfile", rawBlockOr "subfile" doSubfile)
+   , ("usepackage", rawBlockOr "usepackage" $ include "usepackage")
+   -- preamble
+   , ("PackageError", mempty <$ (braced >> braced >> braced))
+   -- epigraph package
+   , ("epigraph", epigraph)
    ]
 
 
 environments :: PandocMonad m => M.Map Text (LP m Blocks)
 environments = M.fromList
-   [ ("document", env "document" blocks)
+   [ ("document", env "document" blocks <* skipMany anyTok)
    , ("abstract", mempty <$ (env "abstract" blocks >>= addMeta "abstract"))
+   , ("sloppypar", env "sloppypar" $ blocks)
    , ("letter", env "letter" letterContents)
    , ("minipage", env "minipage" $
           skipopts *> spaces *> optional braced *> spaces *> blocks)
@@ -2027,8 +1848,8 @@ environments = M.fromList
    , ("longtable",  env "longtable" $
           resetCaption *> simpTable "longtable" False >>= addTableCaption)
    , ("table",  env "table" $
-          resetCaption *> skipopts *> blocks >>= addTableCaption)
-   , ("tabular*", env "tabular" $ simpTable "tabular*" True)
+          skipopts *> resetCaption *> blocks >>= addTableCaption)
+   , ("tabular*", env "tabular*" $ simpTable "tabular*" True)
    , ("tabularx", env "tabularx" $ simpTable "tabularx" True)
    , ("tabular", env "tabular"  $ simpTable "tabular" False)
    , ("quote", blockQuote <$> env "quote" blocks)
@@ -2039,30 +1860,21 @@ environments = M.fromList
    , ("enumerate", orderedList')
    , ("alltt", alltt <$> env "alltt" blocks)
    , ("code", guardEnabled Ext_literate_haskell *>
-       (codeBlockWith ("",["sourceCode","literate","haskell"],[]) <$>
-         verbEnv "code"))
+       (codeBlockWith ("",["haskell","literate"],[]) <$> verbEnv "code"))
    , ("comment", mempty <$ verbEnv "comment")
    , ("verbatim", codeBlock <$> verbEnv "verbatim")
    , ("Verbatim", fancyverbEnv "Verbatim")
    , ("BVerbatim", fancyverbEnv "BVerbatim")
    , ("lstlisting", do attr <- parseListingsOptions <$> option [] keyvals
                        codeBlockWith attr <$> verbEnv "lstlisting")
-    , ("minted", minted)
+   , ("minted", minted)
    , ("obeylines", obeylines)
-   , ("displaymath", mathEnvWith para Nothing "displaymath")
-   , ("equation", mathEnvWith para Nothing "equation")
-   , ("equation*", mathEnvWith para Nothing "equation*")
-   , ("gather", mathEnvWith para (Just "gathered") "gather")
-   , ("gather*", mathEnvWith para (Just "gathered") "gather*")
-   , ("multline", mathEnvWith para (Just "gathered") "multline")
-   , ("multline*", mathEnvWith para (Just "gathered") "multline*")
-   , ("eqnarray", mathEnvWith para (Just "aligned") "eqnarray")
-   , ("eqnarray*", mathEnvWith para (Just "aligned") "eqnarray*")
-   , ("align", mathEnvWith para (Just "aligned") "align")
-   , ("align*", mathEnvWith para (Just "aligned") "align*")
-   , ("alignat", mathEnvWith para (Just "aligned") "alignat")
-   , ("alignat*", mathEnvWith para (Just "aligned") "alignat*")
    , ("tikzpicture", rawVerbEnv "tikzpicture")
+   , ("tikzcd", rawVerbEnv "tikzcd")
+   , ("lilypond", rawVerbEnv "lilypond")
+   , ("ly", rawVerbEnv "ly")
+   -- amsthm
+   , ("proof", proof)
    -- etoolbox
    , ("ifstrequal", ifstrequal)
    , ("newtoggle", braced >>= newToggle)
@@ -2071,12 +1883,126 @@ environments = M.fromList
    , ("iftoggle", try $ ifToggle >> block)
    ]
 
+theoremstyle :: PandocMonad m => LP m Blocks
+theoremstyle = do
+  stylename <- untokenize <$> braced
+  let mbstyle = case stylename of
+                  "plain"      -> Just PlainStyle
+                  "definition" -> Just DefinitionStyle
+                  "remark"     -> Just RemarkStyle
+                  _            -> Nothing
+  case mbstyle of
+    Nothing  -> return ()
+    Just sty -> updateState $ \s -> s{ sLastTheoremStyle = sty }
+  return mempty
+
+newtheorem :: PandocMonad m => LP m Blocks
+newtheorem = do
+  number <- option True (False <$ symbol '*' <* sp)
+  name <- untokenize <$> braced
+  sp
+  series <- option Nothing $ Just . untokenize <$> bracketedToks
+  sp
+  showName <- untokenize <$> braced
+  sp
+  syncTo <- option Nothing $ Just . untokenize <$> bracketedToks
+  sty <- sLastTheoremStyle <$> getState
+  let spec = TheoremSpec { theoremName = showName
+                         , theoremStyle = sty
+                         , theoremSeries = series
+                         , theoremSyncTo = syncTo
+                         , theoremNumber = number
+                         , theoremLastNum = DottedNum [0] }
+  tmap <- sTheoremMap <$> getState
+  updateState $ \s -> s{ sTheoremMap =
+                            M.insert name spec tmap }
+  return mempty
+
+proof :: PandocMonad m => LP m Blocks
+proof = do
+  title <- option (B.text "Proof") opt
+  bs <- env "proof" blocks
+  return $
+    B.divWith ("", ["proof"], []) $
+      addQed $ addTitle (B.emph (title <> ".")) $ bs
+
+addTitle :: Inlines -> Blocks -> Blocks
+addTitle ils bs =
+  case B.toList bs of
+    (Para xs : rest)
+      -> B.fromList (Para (B.toList ils ++ (Space : xs)) : rest)
+    _ -> B.para ils <> bs
+
+addQed :: Blocks -> Blocks
+addQed bs =
+  case Seq.viewr (B.unMany bs) of
+    s Seq.:> Para ils
+      -> B.Many (s Seq.|> Para (ils ++ B.toList qedSign))
+    _ -> bs <> B.para qedSign
+ where
+  qedSign = B.str "\xa0\x25FB"
+
 environment :: PandocMonad m => LP m Blocks
-environment = do
+environment = try $ do
   controlSeq "begin"
   name <- untokenize <$> braced
-  M.findWithDefault mzero name environments
-    <|> rawEnv name
+  M.findWithDefault mzero name environments <|>
+    theoremEnvironment name <|>
+    if M.member name (inlineEnvironments
+                       :: M.Map Text (LP PandocPure Inlines))
+       then mzero
+       else try (rawEnv name) <|> rawVerbEnv name
+
+theoremEnvironment :: PandocMonad m => Text -> LP m Blocks
+theoremEnvironment name = do
+  tmap <- sTheoremMap <$> getState
+  case M.lookup name tmap of
+    Nothing -> mzero
+    Just tspec -> do
+       optTitle <- option mempty $ (\x -> space <> "(" <> x <> ")") <$> opt
+       mblabel <- option Nothing $ Just . untokenize <$>
+                   try (spaces >> controlSeq "label" >> spaces >> braced)
+       bs <- env name blocks
+       number <-
+         if theoremNumber tspec
+            then do
+               let name' = fromMaybe name $ theoremSeries tspec
+               num <- getNextNumber
+                   (fromMaybe (DottedNum [0]) .
+                    fmap theoremLastNum .
+                    M.lookup name' . sTheoremMap)
+               updateState $ \s ->
+                 s{ sTheoremMap =
+                       M.adjust
+                       (\spec -> spec{ theoremLastNum = num })
+                       name'
+                       (sTheoremMap s)
+                  }
+
+               case mblabel of
+                 Just ident ->
+                   updateState $ \s ->
+                     s{ sLabels = M.insert ident
+                         [Str (theoremName tspec), Str "\160",
+                          Str (renderDottedNum num)] (sLabels s) }
+                 Nothing -> return ()
+               return $ space <> B.text (renderDottedNum num)
+            else return mempty
+       let titleEmph = case theoremStyle tspec of
+                         PlainStyle      -> B.strong
+                         DefinitionStyle -> B.strong
+                         RemarkStyle     -> B.emph
+       let title = titleEmph (B.text (theoremName tspec) <> number)
+                                      <> optTitle <> "." <> space
+       return $ divWith (fromMaybe "" mblabel, [name], []) $ addTitle title
+              $ case theoremStyle tspec of
+                  PlainStyle -> walk italicize bs
+                  _          -> bs
+
+italicize :: Block -> Block
+italicize (Para ils) = Para [Emph ils]
+italicize (Plain ils) = Plain [Emph ils]
+italicize x = x
 
 env :: PandocMonad m => Text -> LP m a -> LP m a
 env name p = p <* end_ name
@@ -2091,19 +2017,18 @@ rawEnv name = do
   (bs, raw) <- withRaw $ env name blocks
   if parseRaw
      then return $ rawBlock "latex"
-                 $ T.unpack $ beginCommand <> untokenize raw
+                 $ beginCommand <> untokenize raw
      else do
-       unless parseRaw $ do
-         report $ SkippedContent (T.unpack beginCommand) pos1
+       report $ SkippedContent beginCommand pos1
        pos2 <- getPosition
-       report $ SkippedContent ("\\end{" ++ T.unpack name ++ "}") pos2
+       report $ SkippedContent ("\\end{" <> name <> "}") pos2
        return bs
 
 rawVerbEnv :: PandocMonad m => Text -> LP m Blocks
 rawVerbEnv name = do
   pos <- getPosition
   (_, raw) <- withRaw $ verbEnv name
-  let raw' = "\\begin{tikzpicture}" ++ toksToString raw
+  let raw' = "\\begin{" <> name <> "}" <> untokenize raw
   exts <- getOption readerExtensions
   let parseRaw = extensionEnabled Ext_raw_tex exts
   if parseRaw
@@ -2111,13 +2036,6 @@ rawVerbEnv name = do
      else do
        report $ SkippedContent raw' pos
        return mempty
-
-verbEnv :: PandocMonad m => Text -> LP m String
-verbEnv name = withVerbatimMode $ do
-  skipopts
-  optional blankline
-  res <- manyTill anyTok (end_ name)
-  return $ stripTrailingNewlines $ toksToString res
 
 fancyverbEnv :: PandocMonad m => Text -> LP m Blocks
 fancyverbEnv name = do
@@ -2131,28 +2049,46 @@ fancyverbEnv name = do
   codeBlockWith attr <$> verbEnv name
 
 obeylines :: PandocMonad m => LP m Blocks
-obeylines = do
+obeylines =
   para . fromList . removeLeadingTrailingBreaks .
-     walk softBreakToHard . toList <$> env "obeylines" inlines
+   walk softBreakToHard . toList <$> env "obeylines" inlines
   where softBreakToHard SoftBreak = LineBreak
         softBreakToHard x         = x
         removeLeadingTrailingBreaks = reverse . dropWhile isLineBreak .
                                       reverse . dropWhile isLineBreak
-        isLineBreak LineBreak     = True
-        isLineBreak _             = False
+        isLineBreak LineBreak = True
+        isLineBreak _         = False
 
 minted :: PandocMonad m => LP m Blocks
 minted = do
+  attr <- mintedAttr
+  codeBlockWith attr <$> verbEnv "minted"
+
+mintedAttr :: PandocMonad m => LP m Attr
+mintedAttr = do
   options <- option [] keyvals
-  lang <- toksToString <$> braced
+  lang <- untokenize <$> braced
   let kvs = [ (if k == "firstnumber"
                   then "startFrom"
                   else k, v) | (k,v) <- options ]
-  let classes = [ lang | not (null lang) ] ++
+  let classes = [ lang | not (T.null lang) ] ++
                 [ "numberLines" |
                   lookup "linenos" options == Just "true" ]
-  let attr = ("",classes,kvs)
-  codeBlockWith attr <$> verbEnv "minted"
+  return ("",classes,kvs)
+
+inputMinted :: PandocMonad m => LP m Blocks
+inputMinted = do
+  pos <- getPosition
+  attr <- mintedAttr
+  f <- T.filter (/='"') . untokenize <$> braced
+  dirs <- (map T.unpack . splitTextBy (==':') . fromMaybe ".") <$> lookupEnv "TEXINPUTS"
+  mbCode <- readFileFromDirs dirs (T.unpack f)
+  rawcode <- case mbCode of
+                  Just s -> return s
+                  Nothing -> do
+                    report $ CouldNotLoadIncludeFile f pos
+                    return ""
+  return $ B.codeBlockWith attr rawcode
 
 letterContents :: PandocMonad m => LP m Blocks
 letterContents = do
@@ -2172,30 +2108,69 @@ figure = try $ do
 
 addImageCaption :: PandocMonad m => Blocks -> LP m Blocks
 addImageCaption = walkM go
-  where go (Image attr alt (src,tit))
-            | not ("fig:" `isPrefixOf` tit) = do
-          mbcapt <- sCaption <$> getState
-          return $ case mbcapt of
-               Just ils -> Image attr (toList ils) (src, "fig:" ++ tit)
-               Nothing  -> Image attr alt (src,tit)
+  where go (Image attr@(_, cls, kvs) alt (src,tit))
+            | not ("fig:" `T.isPrefixOf` tit) = do
+          st <- getState
+          let (alt', tit') = case sCaption st of
+                               Just ils -> (toList ils, "fig:" <> tit)
+                               Nothing  -> (alt, tit)
+              attr' = case sLastLabel st of
+                        Just lab -> (lab, cls, kvs)
+                        Nothing  -> attr
+          case attr' of
+               ("", _, _)    -> return ()
+               (ident, _, _) -> do
+                  num <- getNextNumber sLastFigureNum
+                  setState
+                    st{ sLastFigureNum = num
+                      , sLabels = M.insert ident
+                                 [Str (renderDottedNum num)] (sLabels st) }
+          return $ Image attr' alt' (src, tit')
         go x = return x
 
-coloredBlock :: PandocMonad m => String -> LP m Blocks
+getNextNumber :: Monad m
+              => (LaTeXState -> DottedNum) -> LP m DottedNum
+getNextNumber getCurrentNum = do
+  st <- getState
+  let chapnum =
+        case sLastHeaderNum st of
+             DottedNum (n:_) | sHasChapters st -> Just n
+             _                                 -> Nothing
+  return . DottedNum $
+    case getCurrentNum st of
+       DottedNum [m,n]  ->
+         case chapnum of
+              Just m' | m' == m   -> [m, n+1]
+                      | otherwise -> [m', 1]
+              Nothing             -> [1]
+                                      -- shouldn't happen
+       DottedNum [n]   ->
+         case chapnum of
+              Just m  -> [m, 1]
+              Nothing -> [n + 1]
+       _               ->
+         case chapnum of
+               Just n  -> [n, 1]
+               Nothing -> [1]
+
+
+coloredBlock :: PandocMonad m => Text -> LP m Blocks
 coloredBlock stylename = try $ do
   skipopts
   color <- braced
   notFollowedBy (grouped inline)
-  let constructor = divWith ("",[],[("style",stylename ++ ": " ++ toksToString color)])
+  let constructor = divWith ("",[],[("style",stylename <> ": " <> untokenize color)])
   constructor <$> grouped block
 
 graphicsPath :: PandocMonad m => LP m Blocks
 graphicsPath = do
-  ps <- map toksToString <$> (bgroup *> manyTill braced egroup)
-  getResourcePath >>= setResourcePath . (++ ps)
+  ps <- map (T.unpack . untokenize) <$>
+          (bgroup *> spaces *> manyTill (braced <* spaces) egroup)
+  getResourcePath >>= setResourcePath . (<> ps)
   return mempty
 
-splitBibs :: String -> [Inlines]
-splitBibs = map (str . flip replaceExtension "bib" . trim) . splitBy (==',')
+splitBibs :: Text -> [Inlines]
+splitBibs = map (str . T.pack . flip replaceExtension "bib" . T.unpack . trim) . splitTextBy (==',')
 
 alltt :: Blocks -> Blocks
 alltt = walk strToCode
@@ -2204,39 +2179,39 @@ alltt = walk strToCode
         strToCode SoftBreak = LineBreak
         strToCode x         = x
 
-parseListingsOptions :: [(String, String)] -> Attr
+parseListingsOptions :: [(Text, Text)] -> Attr
 parseListingsOptions options =
   let kvs = [ (if k == "firstnumber"
                   then "startFrom"
                   else k, v) | (k,v) <- options ]
       classes = [ "numberLines" |
                   lookup "numbers" options == Just "left" ]
-             ++ maybeToList (lookup "language" options
-                     >>= fromListingsLanguage)
+             ++ maybeToList (listingsLanguage options)
   in  (fromMaybe "" (lookup "label" options), classes, kvs)
 
 inputListing :: PandocMonad m => LP m Blocks
 inputListing = do
   pos <- getPosition
   options <- option [] keyvals
-  f <- filter (/='"') . toksToString <$> braced
-  dirs <- (splitBy (==':') . fromMaybe ".") <$> lookupEnv "TEXINPUTS"
-  mbCode <- readFileFromDirs dirs f
+  f <- T.filter (/='"') . untokenize <$> braced
+  dirs <- (map T.unpack . splitTextBy (==':') . fromMaybe ".") <$> lookupEnv "TEXINPUTS"
+  mbCode <- readFileFromDirs dirs (T.unpack f)
   codeLines <- case mbCode of
-                      Just s -> return $ lines s
+                      Just s -> return $ T.lines s
                       Nothing -> do
                         report $ CouldNotLoadIncludeFile f pos
                         return []
   let (ident,classes,kvs) = parseListingsOptions options
-  let language = case lookup "language" options >>= fromListingsLanguage of
-                      Just l -> [l]
-                      Nothing -> take 1 $ languagesByExtension (takeExtension f)
+  let classes' =
+        (case listingsLanguage options of
+           Nothing -> (take 1 (languagesByExtension (T.pack $ takeExtension $ T.unpack f)) <>)
+           Just _  -> id) classes
   let firstline = fromMaybe 1 $ lookup "firstline" options >>= safeRead
   let lastline = fromMaybe (length codeLines) $
                        lookup "lastline" options >>= safeRead
-  let codeContents = intercalate "\n" $ take (1 + lastline - firstline) $
+  let codeContents = T.intercalate "\n" $ take (1 + lastline - firstline) $
                        drop (firstline - 1) codeLines
-  return $ codeBlockWith (ident,ordNub (classes ++ language),kvs) codeContents
+  return $ codeBlockWith (ident,classes',kvs) codeContents
 
 -- lists
 
@@ -2247,7 +2222,7 @@ descItem :: PandocMonad m => LP m (Inlines, [Blocks])
 descItem = do
   blocks -- skip blocks before item
   controlSeq "item"
-  optional sp
+  sp
   ils <- opt
   bs <- blocks
   return (ils, [bs])
@@ -2265,12 +2240,12 @@ orderedList' = try $ do
   spaces
   let markerSpec = do
         symbol '['
-        ts <- toksToString <$> manyTill anyTok (symbol ']')
+        ts <- untokenize <$> manyTill anyTok (symbol ']')
         case runParser anyOrderedListMarker def "option" ts of
              Right r -> return r
              Left _  -> do
                pos <- getPosition
-               report $ SkippedContent ("[" ++ ts ++ "]") pos
+               report $ SkippedContent ("[" <> ts <> "]") pos
                return (1, DefaultStyle, DefaultDelim)
   (_, style, delim) <- option (1, DefaultStyle, DefaultDelim) markerSpec
   spaces
@@ -2280,17 +2255,17 @@ orderedList' = try $ do
   spaces
   start <- option 1 $ try $ do pos <- getPosition
                                controlSeq "setcounter"
-                               ctr <- toksToString <$> braced
-                               guard $ "enum" `isPrefixOf` ctr
-                               guard $ all (`elem` ['i','v']) (drop 4 ctr)
-                               optional sp
-                               num <- toksToString <$> braced
+                               ctr <- untokenize <$> braced
+                               guard $ "enum" `T.isPrefixOf` ctr
+                               guard $ T.all (`elem` ['i','v']) (T.drop 4 ctr)
+                               sp
+                               num <- untokenize <$> braced
                                case safeRead num of
                                     Just i -> return (i + 1 :: Int)
                                     Nothing -> do
                                       report $ SkippedContent
-                                        ("\\setcounter{" ++ ctr ++
-                                         "}{" ++ num ++ "}") pos
+                                        ("\\setcounter{" <> ctr <>
+                                         "}{" <> num <> "}") pos
                                       return 1
   bs <- listenv "enumerate" (many item)
   return $ orderedListWith (start, style, delim) bs
@@ -2308,11 +2283,12 @@ hline = try $ do
     controlSeq "endhead" <|>
     controlSeq "endfirsthead"
   spaces
-  optional $ bracketed inline
+  optional opt
   return ()
 
 lbreak :: PandocMonad m => LP m Tok
-lbreak = (controlSeq "\\" <|> controlSeq "tabularnewline") <* spaces
+lbreak = (controlSeq "\\" <|> controlSeq "tabularnewline")
+         <* skipopts <* spaces
 
 amp :: PandocMonad m => LP m Tok
 amp = symbol '&'
@@ -2322,14 +2298,14 @@ splitWordTok :: PandocMonad m => LP m ()
 splitWordTok = do
   inp <- getInput
   case inp of
-       (Tok spos Word t : rest) -> do
-         setInput $ map (Tok spos Symbol . T.singleton) (T.unpack t) ++ rest
+       (Tok spos Word t : rest) ->
+         setInput $ map (Tok spos Symbol . T.singleton) (T.unpack t) <> rest
        _ -> return ()
 
-parseAligns :: PandocMonad m => LP m [(Alignment, Double, ([Tok], [Tok]))]
+parseAligns :: PandocMonad m => LP m [(Alignment, ColWidth, ([Tok], [Tok]))]
 parseAligns = try $ do
-  let maybeBar = skipMany $
-        sp <|> () <$ symbol '|' <|> () <$ (symbol '@' >> braced)
+  let maybeBar = skipMany
+        (try $ sp *> (() <$ symbol '|' <|> () <$ (symbol '@' >> braced)))
   let cAlign = AlignCenter <$ symbol 'c'
   let lAlign = AlignLeft <$ symbol 'l'
   let rAlign = AlignRight <$ symbol 'r'
@@ -2344,71 +2320,125 @@ parseAligns = try $ do
   let alignSuffix = symbol '<' >> braced
   let colWidth = try $ do
         symbol '{'
-        ds <- trim . toksToString <$> manyTill anyTok (controlSeq "linewidth")
+        ds <- trim . untokenize <$> manyTill anyTok (controlSeq "linewidth")
         spaces
         symbol '}'
-        case safeRead ds of
-              Just w  -> return w
-              Nothing -> return 0.0
-  let alignSpec = try $ do
-        spaces
+        return $ safeRead ds
+  let alignSpec = do
         pref <- option [] alignPrefix
         spaces
         al <- alignChar
-        width <- colWidth <|> option 0.0 (do s <- toksToString <$> braced
-                                             pos <- getPosition
-                                             report $ SkippedContent s pos
-                                             return 0.0)
+        width <- colWidth <|> option Nothing (do s <- untokenize <$> braced
+                                                 pos <- getPosition
+                                                 report $ SkippedContent s pos
+                                                 return Nothing)
         spaces
         suff <- option [] alignSuffix
         return (al, width, (pref, suff))
+  let starAlign = do -- '*{2}{r}' == 'rr', we just expand like a macro
+        symbol '*'
+        spaces
+        ds <- trim . untokenize <$> braced
+        spaces
+        spec <- braced
+        case safeRead ds of
+             Just n  ->
+               getInput >>= setInput . (mconcat (replicate n spec) ++)
+             Nothing -> Prelude.fail $ "Could not parse " <> T.unpack ds <> " as number"
   bgroup
   spaces
   maybeBar
-  aligns' <- many (alignSpec <* maybeBar)
+  aligns' <- many $ try $ spaces >> optional starAlign >>
+                            (alignSpec <* maybeBar)
   spaces
   egroup
   spaces
-  return aligns'
+  return $ map toSpec aligns'
+  where
+    toColWidth (Just w) | w > 0 = ColWidth w
+    toColWidth _                = ColWidthDefault
+    toSpec (x, y, z) = (x, toColWidth y, z)
 
 parseTableRow :: PandocMonad m
               => Text   -- ^ table environment name
               -> [([Tok], [Tok])] -- ^ pref/suffixes
-              -> LP m [Blocks]
+              -> LP m Row
 parseTableRow envname prefsufs = do
   notFollowedBy (spaces *> end_ envname)
-  let cols = length prefsufs
   -- add prefixes and suffixes in token stream:
   let celltoks (pref, suff) = do
         prefpos <- getPosition
-        contents <- many (notFollowedBy
+        contents <- mconcat <$>
+            many ( snd <$> withRaw (controlSeq "parbox" >> parbox) -- #5711
+                  <|>
+                   (do notFollowedBy
                          (() <$ amp <|> () <$ lbreak <|> end_ envname)
-                         >> anyTok)
+                       count 1 anyTok) )
+
         suffpos <- getPosition
         option [] (count 1 amp)
-        return $ map (setpos (sourceLine prefpos, sourceColumn prefpos)) pref
-                 ++ contents ++
-                 map (setpos (sourceLine suffpos, sourceColumn suffpos)) suff
-  rawcells <- sequence (map celltoks prefsufs)
+        return $ map (setpos prefpos) pref ++ contents ++ map (setpos suffpos) suff
+  rawcells <- mapM celltoks prefsufs
   oldInput <- getInput
-  cells <- sequence $ map (\ts -> setInput ts >> parseTableCell) rawcells
+  cells <- mapM (\ts -> setInput ts >> parseTableCell) rawcells
   setInput oldInput
   spaces
-  let numcells = length cells
-  guard $ numcells <= cols && numcells >= 1
-  guard $ cells /= [mempty]
-  -- note:  a & b in a three-column table leaves an empty 3rd cell:
-  return $ cells ++ replicate (cols - numcells) mempty
+  return $ Row nullAttr cells 
 
-parseTableCell :: PandocMonad m => LP m Blocks
+parseTableCell :: PandocMonad m => LP m Cell
 parseTableCell = do
-  let plainify bs = case toList bs of
-                         [Para ils] -> plain (fromList ils)
-                         _          -> bs
   updateState $ \st -> st{ sInTableCell = True }
-  cells <- plainify <$> blocks
+  cell' <- parseMultiCell <|> parseSimpleCell
   updateState $ \st -> st{ sInTableCell = False }
-  return cells
+  return cell'
+
+cellAlignment :: PandocMonad m => LP m Alignment
+cellAlignment = skipMany (symbol '|') *> alignment <* skipMany (symbol '|')
+  where
+    alignment = do
+      c <- untoken <$> singleChar
+      return $ case c of
+        "l" -> AlignLeft
+        "r" -> AlignRight
+        "c" -> AlignCenter
+        "*" -> AlignDefault
+        _   -> AlignDefault
+
+plainify :: Blocks -> Blocks
+plainify bs = case toList bs of
+                [Para ils] -> plain (fromList ils)
+                _          -> bs
+
+parseMultiCell :: PandocMonad m => LP m Cell
+parseMultiCell =   (controlSeq "multirow"    >> parseMultirowCell) 
+               <|> (controlSeq "multicolumn" >> parseMulticolCell)
+  where
+    parseMultirowCell = parseMultiXCell RowSpan (const $ ColSpan 1)
+    parseMulticolCell = parseMultiXCell (const $ RowSpan 1) ColSpan
+
+    parseMultiXCell rowspanf colspanf = do
+      span' <- fmap (fromMaybe 1 . safeRead . untokenize) braced
+      alignment <- symbol '{' *> cellAlignment <* symbol '}'
+
+      -- Two possible contents: either a nested \multirow/\multicol, or content.
+      -- E.g. \multirow{1}{c}{\multicol{1}{c}{content}}
+      let singleCell = do
+            content <- plainify <$> blocks
+            return $ cell alignment (rowspanf span') (colspanf span') content
+
+      let nestedCell = do
+            (Cell _ _ (RowSpan rs) (ColSpan cs) bs) <- parseMultiCell
+            return $ cell
+                      alignment
+                      (RowSpan $ max span' rs)
+                      (ColSpan $ max span' cs)
+                      (fromList bs)
+
+      symbol '{' *> (nestedCell <|> singleCell) <* symbol '}'
+
+-- Parse a simple cell, i.e. not multirow/multicol
+parseSimpleCell :: PandocMonad m => LP m Cell
+parseSimpleCell = simpleCell <$> (plainify <$> blocks)
 
 simpTable :: PandocMonad m => Text -> Bool -> LP m Blocks
 simpTable envname hasWidthParameter = try $ do
@@ -2416,166 +2446,86 @@ simpTable envname hasWidthParameter = try $ do
   skipopts
   colspecs <- parseAligns
   let (aligns, widths, prefsufs) = unzip3 colspecs
-  let cols = length colspecs
-  optional $ controlSeq "caption" *> skipopts *> setCaption
+  optional $ controlSeq "caption" *> setCaption
+  spaces
+  optional label
+  spaces
   optional lbreak
   spaces
   skipMany hline
   spaces
-  header' <- option [] $ try (parseTableRow envname prefsufs <*
-                                   lbreak <* many1 hline)
+  header' <- option [] . try . fmap (:[]) $
+             parseTableRow envname prefsufs <* lbreak <* many1 hline
   spaces
   rows <- sepEndBy (parseTableRow envname prefsufs)
                     (lbreak <* optional (skipMany hline))
   spaces
-  optional $ controlSeq "caption" *> skipopts *> setCaption
+  optional $ controlSeq "caption" *> setCaption
+  spaces
+  optional label
+  spaces
   optional lbreak
   spaces
-  let header'' = if null header'
-                    then replicate cols mempty
-                    else header'
   lookAhead $ controlSeq "end" -- make sure we're at end
-  return $ table mempty (zip aligns widths) header'' rows
+  return $ table emptyCaption
+                 (zip aligns widths)
+                 (TableHead nullAttr $ header')
+                 [TableBody nullAttr 0 [] rows]
+                 (TableFoot nullAttr [])
 
 addTableCaption :: PandocMonad m => Blocks -> LP m Blocks
 addTableCaption = walkM go
-  where go (Table c als ws hs rs) = do
-          mbcapt <- sCaption <$> getState
-          return $ case mbcapt of
-               Just ils -> Table (toList ils) als ws hs rs
-               Nothing  -> Table c als ws hs rs
+  where go (Table attr c spec th tb tf) = do
+          st <- getState
+          let mblabel = sLastLabel st
+          capt <- case (sCaption st, mblabel) of
+                   (Just ils, Nothing)  -> return $ caption Nothing (plain ils)
+                   (Just ils, Just lab) -> do
+                     num <- getNextNumber sLastTableNum
+                     setState
+                       st{ sLastTableNum = num
+                         , sLabels = M.insert lab
+                                    [Str (renderDottedNum num)]
+                                    (sLabels st) }
+                     return $ caption Nothing (plain ils) -- add number??
+                   (Nothing, _)  -> return c
+          let attr' = case (attr, mblabel) of
+                        ((_,classes,kvs), Just ident) ->
+                           (ident,classes,kvs)
+                        _ -> attr
+          return $ addAttrDiv attr' $ Table nullAttr capt spec th tb tf
         go x = return x
 
+-- TODO: For now we add a Div to contain table attributes, since
+-- most writers don't do anything yet with attributes on Table.
+-- This can be removed when that changes.
+addAttrDiv :: Attr -> Block -> Block
+addAttrDiv ("",[],[]) b = b
+addAttrDiv attr b       = Div attr [b]
 
 block :: PandocMonad m => LP m Blocks
-block = (mempty <$ spaces1)
+block = do
+  res <- (mempty <$ spaces1)
     <|> environment
-    <|> include
-    <|> macroDef
+    <|> macroDef (rawBlock "latex")
     <|> blockCommand
     <|> paragraph
     <|> grouped block
+  trace (T.take 60 $ tshow $ B.toList res)
+  return res
 
 blocks :: PandocMonad m => LP m Blocks
 blocks = mconcat <$> many block
 
 setDefaultLanguage :: PandocMonad m => LP m Blocks
 setDefaultLanguage = do
-  o <- option "" $ (T.unpack . T.filter (\c -> c /= '[' && c /= ']'))
+  o <- option "" $ T.filter (\c -> c /= '[' && c /= ']')
                 <$> rawopt
-  polylang <- toksToString <$> braced
-  case polyglossiaLangToBCP47 polylang o of
+  polylang <- untokenize <$> braced
+  case M.lookup polylang polyglossiaLangToBCP47 of
        Nothing -> return mempty -- TODO mzero? warning?
-       Just l -> do
+       Just langFunc -> do
+         let l = langFunc o
          setTranslations l
          updateState $ setMeta "lang" $ str (renderLang l)
          return mempty
-
-polyglossiaLangToBCP47 :: String -> String -> Maybe Lang
-polyglossiaLangToBCP47 s o =
-  case (s, filter (/=' ') o) of
-       ("arabic", "locale=algeria") -> Just $ Lang "ar" "" "DZ" []
-       ("arabic", "locale=mashriq") -> Just $ Lang "ar" "" "SY" []
-       ("arabic", "locale=libya") -> Just $ Lang "ar" "" "LY" []
-       ("arabic", "locale=morocco") -> Just $ Lang "ar" "" "MA" []
-       ("arabic", "locale=mauritania") -> Just $ Lang "ar" "" "MR" []
-       ("arabic", "locale=tunisia") -> Just $ Lang "ar" "" "TN" []
-       ("german", "spelling=old") -> Just $ Lang "de" "" "DE" ["1901"]
-       ("german", "variant=austrian,spelling=old")
-                                  -> Just $ Lang "de" "" "AT" ["1901"]
-       ("german", "variant=austrian") -> Just $ Lang "de" "" "AT" []
-       ("german", "variant=swiss,spelling=old")
-                                  -> Just $ Lang "de" "" "CH" ["1901"]
-       ("german", "variant=swiss") -> Just $ Lang "de" "" "CH" []
-       ("german", _) -> Just $ Lang "de" "" "" []
-       ("lsorbian", _) -> Just $ Lang "dsb" "" "" []
-       ("greek", "variant=poly") -> Just $ Lang "el" "" "polyton" []
-       ("english", "variant=australian") -> Just $ Lang "en" "" "AU" []
-       ("english", "variant=canadian") -> Just $ Lang "en" "" "CA" []
-       ("english", "variant=british") -> Just $ Lang "en" "" "GB" []
-       ("english", "variant=newzealand") -> Just $ Lang "en" "" "NZ" []
-       ("english", "variant=american") -> Just $ Lang "en" "" "US" []
-       ("greek", "variant=ancient") -> Just $ Lang "grc" "" "" []
-       ("usorbian", _) -> Just $ Lang "hsb" "" "" []
-       ("latin", "variant=classic") -> Just $ Lang "la" "" "" ["x-classic"]
-       ("slovenian", _) -> Just $ Lang "sl" "" "" []
-       ("serbianc", _) -> Just $ Lang "sr" "cyrl" "" []
-       ("pinyin", _) -> Just $ Lang "zh" "Latn" "" ["pinyin"]
-       ("afrikaans", _) -> Just $ Lang "af" "" "" []
-       ("amharic", _) -> Just $ Lang "am" "" "" []
-       ("arabic", _) -> Just $ Lang "ar" "" "" []
-       ("assamese", _) -> Just $ Lang "as" "" "" []
-       ("asturian", _) -> Just $ Lang "ast" "" "" []
-       ("bulgarian", _) -> Just $ Lang "bg" "" "" []
-       ("bengali", _) -> Just $ Lang "bn" "" "" []
-       ("tibetan", _) -> Just $ Lang "bo" "" "" []
-       ("breton", _) -> Just $ Lang "br" "" "" []
-       ("catalan", _) -> Just $ Lang "ca" "" "" []
-       ("welsh", _) -> Just $ Lang "cy" "" "" []
-       ("czech", _) -> Just $ Lang "cs" "" "" []
-       ("coptic", _) -> Just $ Lang "cop" "" "" []
-       ("danish", _) -> Just $ Lang "da" "" "" []
-       ("divehi", _) -> Just $ Lang "dv" "" "" []
-       ("greek", _) -> Just $ Lang "el" "" "" []
-       ("english", _) -> Just $ Lang "en" "" "" []
-       ("esperanto", _) -> Just $ Lang "eo" "" "" []
-       ("spanish", _) -> Just $ Lang "es" "" "" []
-       ("estonian", _) -> Just $ Lang "et" "" "" []
-       ("basque", _) -> Just $ Lang "eu" "" "" []
-       ("farsi", _) -> Just $ Lang "fa" "" "" []
-       ("finnish", _) -> Just $ Lang "fi" "" "" []
-       ("french", _) -> Just $ Lang "fr" "" "" []
-       ("friulan", _) -> Just $ Lang "fur" "" "" []
-       ("irish", _) -> Just $ Lang "ga" "" "" []
-       ("scottish", _) -> Just $ Lang "gd" "" "" []
-       ("ethiopic", _) -> Just $ Lang "gez" "" "" []
-       ("galician", _) -> Just $ Lang "gl" "" "" []
-       ("hebrew", _) -> Just $ Lang "he" "" "" []
-       ("hindi", _) -> Just $ Lang "hi" "" "" []
-       ("croatian", _) -> Just $ Lang "hr" "" "" []
-       ("magyar", _) -> Just $ Lang "hu" "" "" []
-       ("armenian", _) -> Just $ Lang "hy" "" "" []
-       ("interlingua", _) -> Just $ Lang "ia" "" "" []
-       ("indonesian", _) -> Just $ Lang "id" "" "" []
-       ("icelandic", _) -> Just $ Lang "is" "" "" []
-       ("italian", _) -> Just $ Lang "it" "" "" []
-       ("japanese", _) -> Just $ Lang "jp" "" "" []
-       ("khmer", _) -> Just $ Lang "km" "" "" []
-       ("kurmanji", _) -> Just $ Lang "kmr" "" "" []
-       ("kannada", _) -> Just $ Lang "kn" "" "" []
-       ("korean", _) -> Just $ Lang "ko" "" "" []
-       ("latin", _) -> Just $ Lang "la" "" "" []
-       ("lao", _) -> Just $ Lang "lo" "" "" []
-       ("lithuanian", _) -> Just $ Lang "lt" "" "" []
-       ("latvian", _) -> Just $ Lang "lv" "" "" []
-       ("malayalam", _) -> Just $ Lang "ml" "" "" []
-       ("mongolian", _) -> Just $ Lang "mn" "" "" []
-       ("marathi", _) -> Just $ Lang "mr" "" "" []
-       ("dutch", _) -> Just $ Lang "nl" "" "" []
-       ("nynorsk", _) -> Just $ Lang "nn" "" "" []
-       ("norsk", _) -> Just $ Lang "no" "" "" []
-       ("nko", _) -> Just $ Lang "nqo" "" "" []
-       ("occitan", _) -> Just $ Lang "oc" "" "" []
-       ("panjabi", _) -> Just $ Lang "pa" "" "" []
-       ("polish", _) -> Just $ Lang "pl" "" "" []
-       ("piedmontese", _) -> Just $ Lang "pms" "" "" []
-       ("portuguese", _) -> Just $ Lang "pt" "" "" []
-       ("romansh", _) -> Just $ Lang "rm" "" "" []
-       ("romanian", _) -> Just $ Lang "ro" "" "" []
-       ("russian", _) -> Just $ Lang "ru" "" "" []
-       ("sanskrit", _) -> Just $ Lang "sa" "" "" []
-       ("samin", _) -> Just $ Lang "se" "" "" []
-       ("slovak", _) -> Just $ Lang "sk" "" "" []
-       ("albanian", _) -> Just $ Lang "sq" "" "" []
-       ("serbian", _) -> Just $ Lang "sr" "" "" []
-       ("swedish", _) -> Just $ Lang "sv" "" "" []
-       ("syriac", _) -> Just $ Lang "syr" "" "" []
-       ("tamil", _) -> Just $ Lang "ta" "" "" []
-       ("telugu", _) -> Just $ Lang "te" "" "" []
-       ("thai", _) -> Just $ Lang "th" "" "" []
-       ("turkmen", _) -> Just $ Lang "tk" "" "" []
-       ("turkish", _) -> Just $ Lang "tr" "" "" []
-       ("ukrainian", _) -> Just $ Lang "uk" "" "" []
-       ("urdu", _) -> Just $ Lang "ur" "" "" []
-       ("vietnamese", _) -> Just $ Lang "vi" "" "" []
-       _ -> Nothing

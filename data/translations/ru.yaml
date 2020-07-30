@@ -1,20 +1,19 @@
-Abstract: Аннотація
-Appendix: Приложеніе
-Author: Именной указатель
-Bibliography: Библіографія
+Abstract: Аннотация
+Appendix: Приложение
+Bibliography: Литература
 Cc: исх.
 Chapter: Глава
-Contents: Оглавленіе
+Contents: Оглавление
 Encl: вкл.
 Figure: Рис.
-Index: Предмѣтный указатель
-ListOfFigures: Списокъ иллюстрацій
-ListOfTables: Списокъ таблицъ
+Index: Предметный указатель
+ListOfFigures: Список иллюстраций
+ListOfTables: Список таблиц
 Page: с.
 Part: Часть
-Preface: Предисловіе
+Preface: Предисловие
 Proof: Доказательство
-References: Примѣчанія
+References: Список литературы
 See: см.
 SeeAlso: см. также
 Table: Таблица

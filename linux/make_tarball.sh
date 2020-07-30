@@ -1,9 +1,10 @@
 set -e
 
-VERSION=$(grep -e '^Version' pandoc.cabal | awk '{print $2}')
+ARTIFACTS="${ARTIFACTS:-/artifacts}"
+VERSION=`$ARTIFACTS/pandoc --version | awk '{print $2; exit;}'`
 TARGET=pandoc-$VERSION
 
-cd /artifacts
+cd $ARTIFACTS
 rm -rf $TARGET
 mkdir $TARGET
 mkdir $TARGET/bin $TARGET/share $TARGET/share/man $TARGET/share/man/man1
@@ -14,5 +15,5 @@ strip $TARGET/bin/pandoc
 strip $TARGET/bin/pandoc-citeproc
 gzip -9 $TARGET/share/man/man1/pandoc.1
 gzip -9 $TARGET/share/man/man1/pandoc-citeproc.1
-tar cvzf $TARGET.tar.gz $TARGET
+tar cvzf $TARGET-linux-amd64.tar.gz $TARGET
 rm -r $TARGET

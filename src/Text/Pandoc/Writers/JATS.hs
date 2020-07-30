@@ -1,25 +1,9 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternGuards     #-}
-{-
-Copyright (C) 2006-2017 John MacFarlane <jgm@berkeley.edu>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
+{-# LANGUAGE ViewPatterns #-}
 {- |
    Module      : Text.Pandoc.Writers.JATS
-   Copyright   : Copyright (C) 2017 John MacFarlane
+   Copyright   : Copyright (C) 2017-2020 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -28,125 +12,159 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 Conversion of 'Pandoc' documents to JATS XML.
 Reference:
-https://jats.nlm.nih.gov/publishing/tag-library/1.1d3/element/mml-math.html
+https://jats.nlm.nih.gov/publishing/tag-library
 -}
-module Text.Pandoc.Writers.JATS ( writeJATS ) where
+module Text.Pandoc.Writers.JATS
+  ( writeJATS
+  , writeJatsArchiving
+  , writeJatsPublishing
+  , writeJatsArticleAuthoring
+  ) where
 import Control.Monad.Reader
-import Data.Char (toLower)
-import Data.Text (Text)
+import Control.Monad.State
 import Data.Generics (everywhere, mkT)
-import Data.List (intercalate, isSuffixOf, partition)
+import Data.List (partition)
+import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
-import qualified Text.Pandoc.Builder as B
-import Text.Pandoc.Class (PandocMonad, report)
+import Data.Time (toGregorian, Day, parseTimeM, defaultTimeLocale, formatTime)
+import qualified Data.Text as T
+import Data.Text (Text)
+import Text.Pandoc.Class.PandocMonad (PandocMonad, report)
 import Text.Pandoc.Definition
 import Text.Pandoc.Highlighting (languages, languagesByExtension)
 import Text.Pandoc.Logging
+import Text.Pandoc.MIME (getMimeType)
+import Text.Pandoc.Walk (walk)
 import Text.Pandoc.Options
-import Text.Pandoc.Pretty
+import Text.DocLayout
 import Text.Pandoc.Shared
-import Text.Pandoc.Templates (renderTemplate')
+import Text.Pandoc.Templates (renderTemplate)
+import Text.DocTemplates (Context(..), Val(..))
 import Text.Pandoc.Writers.Math
 import Text.Pandoc.Writers.Shared
 import Text.Pandoc.XML
-import Text.Pandoc.MIME (getMimeType)
 import Text.TeXMath
 import qualified Text.XML.Light as Xml
 
-data JATSVersion = JATS1_1
-     deriving (Eq, Show)
+-- | JATS tag set variant
+data JATSTagSet
+  = TagSetArchiving         -- ^ Archiving and Interchange Tag Set
+  | TagSetPublishing        -- ^ Journal Publishing Tag Set
+  | TagSetArticleAuthoring  -- ^ Article Authoring Tag Set
+  deriving (Eq)
 
-type DB = ReaderT JATSVersion
+-- | Internal state used by the writer.
+newtype JATSState = JATSState
+  { jatsNotes :: [(Int, Doc Text)] }
 
--- | Convert list of authors to a docbook <author> section
-authorToJATS :: PandocMonad m => WriterOptions -> [Inline] -> DB m B.Inlines
-authorToJATS opts name' = do
-  name <- render Nothing <$> inlinesToJATS opts name'
-  let colwidth = if writerWrapText opts == WrapAuto
-                    then Just $ writerColumns opts
-                    else Nothing
-  return $ B.rawInline "docbook" $ render colwidth $
-      if ',' `elem` name
-         then -- last name first
-              let (lastname, rest) = break (==',') name
-                  firstname = triml rest in
-              inTagsSimple "firstname" (text $ escapeStringForXML firstname) <>
-              inTagsSimple "surname" (text $ escapeStringForXML lastname)
-         else -- last name last
-              let namewords = words name
-                  lengthname = length namewords
-                  (firstname, lastname) = case lengthname of
-                    0  -> ("","")
-                    1  -> ("", name)
-                    n  -> (intercalate " " (take (n-1) namewords), last namewords)
-               in inTagsSimple "firstname" (text $ escapeStringForXML firstname) $$
-                  inTagsSimple "surname" (text $ escapeStringForXML lastname)
+-- | JATS writer type
+type JATS a = StateT JATSState (ReaderT JATSTagSet a)
 
+-- | Convert a @'Pandoc'@ document to JATS (Archiving and Interchange
+-- Tag Set.)
+writeJatsArchiving :: PandocMonad m => WriterOptions -> Pandoc -> m Text
+writeJatsArchiving = writeJats TagSetArchiving
+
+-- | Convert a @'Pandoc'@ document to JATS (Journal Publishing Tag Set.)
+writeJatsPublishing :: PandocMonad m => WriterOptions -> Pandoc -> m Text
+writeJatsPublishing = writeJats TagSetPublishing
+
+-- | Convert a @'Pandoc'@ document to JATS (Archiving and Interchange
+-- Tag Set.)
+writeJatsArticleAuthoring :: PandocMonad m => WriterOptions -> Pandoc -> m Text
+writeJatsArticleAuthoring = writeJats TagSetArticleAuthoring
+
+-- | Alias for @'writeJatsArchiving'@. This function exists for backwards
+-- compatibility, but will be deprecated in the future. Use
+-- @'writeJatsArchiving'@ instead.
 writeJATS :: PandocMonad m => WriterOptions -> Pandoc -> m Text
-writeJATS opts d =
-  runReaderT (docToJATS opts d) JATS1_1
+writeJATS = writeJatsArchiving
+
+-- | Convert a @'Pandoc'@ document to JATS.
+writeJats :: PandocMonad m => JATSTagSet -> WriterOptions -> Pandoc -> m Text
+writeJats tagSet opts d =
+  runReaderT (evalStateT (docToJATS opts d)
+               (JATSState{ jatsNotes = [] }))
+             tagSet
 
 -- | Convert Pandoc document to string in JATS format.
-docToJATS :: PandocMonad m => WriterOptions -> Pandoc -> DB m Text
+docToJATS :: PandocMonad m => WriterOptions -> Pandoc -> JATS m Text
 docToJATS opts (Pandoc meta blocks) = do
   let isBackBlock (Div ("refs",_,_) _) = True
-      isBackBlock _ = False
+      isBackBlock _                    = False
   let (backblocks, bodyblocks) = partition isBackBlock blocks
-  let elements = hierarchicalize bodyblocks
-  let backElements = hierarchicalize backblocks
-  let colwidth = if writerWrapText opts == WrapAuto
-                    then Just $ writerColumns opts
-                    else Nothing
-  let render'  :: Doc -> Text
-      render'  = render colwidth
-  let opts'    = if (maybe False (("/book>" `isSuffixOf`) . trimr)
-                            (writerTemplate opts) &&
-                     TopLevelDefault == writerTopLevelDivision opts)
-                    then opts{ writerTopLevelDivision = TopLevelChapter }
-                    else opts
   -- The numbering here follows LaTeX's internal numbering
-  let startLvl = case writerTopLevelDivision opts' of
+  let startLvl = case writerTopLevelDivision opts of
                    TopLevelPart    -> -1
                    TopLevelChapter -> 0
                    TopLevelSection -> 1
                    TopLevelDefault -> 1
-  auths' <- mapM (authorToJATS opts) $ docAuthors meta
-  let meta' = B.setMeta "author" auths' meta
-  metadata <- metaToJSON opts
-                 (fmap (render' . vcat) .
-                          (mapM (elementToJATS opts' startLvl) .
-                            hierarchicalize))
-                 (fmap render' . inlinesToJATS opts')
-                 meta'
-  main <- (render' . vcat) <$>
-            (mapM (elementToJATS opts' startLvl) elements)
-  back <- (render' . vcat) <$>
-            (mapM (elementToJATS opts' startLvl) backElements)
+  let fromBlocks = blocksToJATS opts . makeSections False (Just startLvl)
+  let colwidth = if writerWrapText opts == WrapAuto
+                    then Just $ writerColumns opts
+                    else Nothing
+  metadata <- metaToContext opts
+                 fromBlocks
+                 (fmap chomp . inlinesToJATS opts)
+                 meta
+  main <- fromBlocks bodyblocks
+  notes <- reverse . map snd <$> gets jatsNotes
+  backs <- fromBlocks backblocks
+  tagSet <- ask
+  -- In the "Article Authoring" tag set, occurrence of fn-group elements
+  -- is restricted to table footers. Footnotes have to be placed inline.
+  let fns = if null notes || tagSet == TagSetArticleAuthoring
+            then mempty
+            else inTagsIndented "fn-group" $ vcat notes
+  let back = backs $$ fns
+  let date =
+        case getField "date" metadata of
+          Nothing -> NullVal
+          Just (SimpleVal (x :: Doc Text)) ->
+             case parseDate (render Nothing x) of
+               Nothing  -> NullVal
+               Just day ->
+                 let (y,m,d) = toGregorian day
+                 in  MapVal . Context $ M.fromList
+                      [("year" :: Text, SimpleVal $ text $ show y)
+                      ,("month", SimpleVal $ text $ show m)
+                      ,("day", SimpleVal $ text $ show d)
+                      ,("iso-8601", SimpleVal $ text $
+                            formatTime defaultTimeLocale "%F" day)
+                      ]
+          Just x -> x
   let context = defField "body" main
               $ defField "back" back
+              $ resetField "date" date
               $ defField "mathml" (case writerHTMLMathMethod opts of
                                         MathML -> True
-                                        _      -> False)
-              $ metadata
-  case writerTemplate opts of
-       Nothing  -> return main
-       Just tpl -> renderTemplate' tpl context
-
--- | Convert an Element to JATS.
-elementToJATS :: PandocMonad m => WriterOptions -> Int -> Element -> DB m Doc
-elementToJATS opts _   (Blk block) = blockToJATS opts block
-elementToJATS opts lvl (Sec _ _num (id',_,kvs) title elements) = do
-  let idAttr = [("id", writerIdentifierPrefix opts ++ id') | not (null id')]
-  let otherAttrs = ["sec-type", "specific-use"]
-  let attribs = idAttr ++ [(k,v) | (k,v) <- kvs, k `elem` otherAttrs]
-  contents <- mapM (elementToJATS opts (lvl + 1)) elements
-  title' <- inlinesToJATS opts title
-  return $ inTags True "sec" attribs $
-      inTagsSimple "title" title' $$ vcat contents
+                                        _      -> False) metadata
+  return $ render colwidth $
+    (if writerPreferAscii opts then fmap toEntities else id) $
+    case writerTemplate opts of
+       Nothing  -> main
+       Just tpl -> renderTemplate tpl context
 
 -- | Convert a list of Pandoc blocks to JATS.
-blocksToJATS :: PandocMonad m => WriterOptions -> [Block] -> DB m Doc
-blocksToJATS opts = fmap vcat . mapM (blockToJATS opts)
+blocksToJATS :: PandocMonad m => WriterOptions -> [Block] -> JATS m (Doc Text)
+blocksToJATS = wrappedBlocksToJATS (const False)
+
+-- | Like @'blocksToJATS'@, but wraps top-level blocks into a @<p>@
+-- element if the @needsWrap@ predicate evaluates to @True@.
+wrappedBlocksToJATS :: PandocMonad m
+                    => (Block -> Bool)
+                    -> WriterOptions
+                    -> [Block]
+                    -> JATS m (Doc Text)
+wrappedBlocksToJATS needsWrap opts =
+  fmap vcat . mapM wrappedBlockToJATS
+  where
+    wrappedBlockToJATS b = do
+      inner <- blockToJATS opts b
+      return $
+        if needsWrap b
+           then inTags True "p" [("specific-use","wrapper")] inner
+           else inner
 
 -- | Auxiliary function to convert Plain block to Para.
 plainToPara :: Block -> Block
@@ -156,23 +174,25 @@ plainToPara x         = x
 -- | Convert a list of pairs of terms and definitions into a list of
 -- JATS varlistentrys.
 deflistItemsToJATS :: PandocMonad m
-                      => WriterOptions -> [([Inline],[[Block]])] -> DB m Doc
+                      => WriterOptions -> [([Inline],[[Block]])] -> JATS m (Doc Text)
 deflistItemsToJATS opts items =
-  vcat <$> mapM (\(term, defs) -> deflistItemToJATS opts term defs) items
+  vcat <$> mapM (uncurry (deflistItemToJATS opts)) items
 
 -- | Convert a term and a list of blocks into a JATS varlistentry.
 deflistItemToJATS :: PandocMonad m
-                     => WriterOptions -> [Inline] -> [[Block]] -> DB m Doc
+                     => WriterOptions -> [Inline] -> [[Block]] -> JATS m (Doc Text)
 deflistItemToJATS opts term defs = do
   term' <- inlinesToJATS opts term
-  def' <- blocksToJATS opts $ concatMap (map plainToPara) defs
+  def' <- wrappedBlocksToJATS (not . isPara)
+              opts $ concatMap (walk demoteHeaderAndRefs .
+                                map plainToPara) defs
   return $ inTagsIndented "def-item" $
-      inTagsIndented "term" term' $$
+      inTagsSimple "term" term' $$
       inTagsIndented "def" def'
 
 -- | Convert a list of lists of blocks to a list of JATS list items.
 listItemsToJATS :: PandocMonad m
-                => WriterOptions -> (Maybe [String]) -> [[Block]] -> DB m Doc
+                => WriterOptions -> Maybe [Text] -> [[Block]] -> JATS m (Doc Text)
 listItemsToJATS opts markers items =
   case markers of
        Nothing -> vcat <$> mapM (listItemToJATS opts Nothing) items
@@ -180,95 +200,146 @@ listItemsToJATS opts markers items =
 
 -- | Convert a list of blocks into a JATS list item.
 listItemToJATS :: PandocMonad m
-               => WriterOptions -> (Maybe String) -> [Block] -> DB m Doc
+               => WriterOptions -> Maybe Text -> [Block] -> JATS m (Doc Text)
 listItemToJATS opts mbmarker item = do
-  contents <- blocksToJATS opts item
+  contents <- wrappedBlocksToJATS (not . isParaOrList) opts
+                 (walk demoteHeaderAndRefs item)
   return $ inTagsIndented "list-item" $
-           maybe empty (\lbl -> inTagsIndented "label" (text lbl)) mbmarker
+           maybe empty (\lbl -> inTagsSimple "label" (text $ T.unpack lbl)) mbmarker
            $$ contents
 
+imageMimeType :: Text -> [(Text, Text)] -> (Text, Text)
+imageMimeType src kvs =
+  let mbMT = getMimeType (T.unpack src)
+      maintype = fromMaybe "image" $
+                  lookup "mimetype" kvs `mplus`
+                  (T.takeWhile (/='/') <$> mbMT)
+      subtype = fromMaybe "" $
+                  lookup "mime-subtype" kvs `mplus`
+                  ((T.drop 1 . T.dropWhile (/='/')) <$> mbMT)
+  in (maintype, subtype)
+
+languageFor :: [Text] -> Text
+languageFor classes =
+  case langs of
+     (l:_) -> escapeStringForXML l
+     []    -> ""
+    where isLang l    = T.toLower l `elem` map T.toLower languages
+          langsFrom s = if isLang s
+                           then [s]
+                           else languagesByExtension . T.toLower $ s
+          langs       = concatMap langsFrom classes
+
+codeAttr :: Attr -> (Text, [(Text, Text)])
+codeAttr (ident,classes,kvs) = (lang, attr)
+    where
+       attr = [("id",ident) | not (T.null ident)] ++
+              [("language",lang) | not (T.null lang)] ++
+              [(k,v) | (k,v) <- kvs, k `elem` ["code-type",
+                "code-version", "executable",
+                "language-version", "orientation",
+                    "platforms", "position", "specific-use"]]
+       lang  = languageFor classes
+
 -- | Convert a Pandoc block element to JATS.
-blockToJATS :: PandocMonad m => WriterOptions -> Block -> DB m Doc
+blockToJATS :: PandocMonad m => WriterOptions -> Block -> JATS m (Doc Text)
 blockToJATS _ Null = return empty
+blockToJATS opts (Div (id',"section":_,kvs) (Header _lvl _ ils : xs)) = do
+  let idAttr = [("id", writerIdentifierPrefix opts <> id') | not (T.null id')]
+  let otherAttrs = ["sec-type", "specific-use"]
+  let attribs = idAttr ++ [(k,v) | (k,v) <- kvs, k `elem` otherAttrs]
+  title' <- inlinesToJATS opts ils
+  contents <- blocksToJATS opts xs
+  return $ inTags True "sec" attribs $
+      inTagsSimple "title" title' $$ contents
 -- Bibliography reference:
-blockToJATS opts (Div ('r':'e':'f':'-':_,_,_) [Para lst]) =
+blockToJATS opts (Div (T.stripPrefix "ref-" -> Just _,_,_) [Para lst]) =
   inlinesToJATS opts lst
 blockToJATS opts (Div ("refs",_,_) xs) = do
   contents <- blocksToJATS opts xs
   return $ inTagsIndented "ref-list" contents
+blockToJATS opts (Div (ident,[cls],kvs) bs) | cls `elem` ["fig", "caption", "table-wrap"] = do
+  contents <- blocksToJATS opts bs
+  let attr = [("id", ident) | not (T.null ident)] ++
+             [("xml:lang",l) | ("lang",l) <- kvs] ++
+             [(k,v) | (k,v) <- kvs, k `elem` ["specific-use",
+                 "content-type", "orientation", "position"]]
+  return $ inTags True cls attr contents
 blockToJATS opts (Div (ident,_,kvs) bs) = do
   contents <- blocksToJATS opts bs
-  let attr = [("id", ident) | not (null ident)] ++
+  let attr = [("id", ident) | not (T.null ident)] ++
              [("xml:lang",l) | ("lang",l) <- kvs] ++
              [(k,v) | (k,v) <- kvs, k `elem` ["specific-use",
                  "content-type", "orientation", "position"]]
   return $ inTags True "boxed-text" attr contents
-blockToJATS _ h@(Header _ _ _) = do
-  -- should not occur after hierarchicalize, except inside lists/blockquotes
-  report $ BlockNotRendered h
-  return empty
+blockToJATS opts (Header _ _ title) = do
+  title' <- inlinesToJATS opts title
+  return $ inTagsSimple "title" title'
 -- No Plain, everything needs to be in a block-level tag
 blockToJATS opts (Plain lst) = blockToJATS opts (Para lst)
 -- title beginning with fig: indicates that the image is a figure
 blockToJATS opts (Para [Image (ident,_,kvs) txt
-  (src,'f':'i':'g':':':tit)]) = do
+  (src,T.stripPrefix "fig:" -> Just tit)]) = do
   alt <- inlinesToJATS opts txt
+  let (maintype, subtype) = imageMimeType src kvs
   let capt = if null txt
                 then empty
-                else inTagsSimple "caption" alt
-  let attr = [("id", ident) | not (null ident)] ++
+                else inTagsSimple "caption" $ inTagsSimple "p" alt
+  let attr = [("id", ident) | not (T.null ident)] ++
              [(k,v) | (k,v) <- kvs, k `elem` ["fig-type", "orientation",
                                               "position", "specific-use"]]
-  let mbMT = getMimeType src
-  let maintype = fromMaybe "image" $
-                  lookup "mimetype" kvs `mplus`
-                  (takeWhile (/='/') <$> mbMT)
-  let subtype = fromMaybe "" $
-                  lookup "mime-subtype" kvs `mplus`
-                  ((drop 1 . dropWhile (/='/')) <$> mbMT)
   let graphicattr = [("mimetype",maintype),
-                     ("mime-subtype",drop 1 subtype),
+                     ("mime-subtype",subtype),
                      ("xlink:href",src),  -- do we need to URL escape this?
                      ("xlink:title",tit)]
   return $ inTags True "fig" attr $
               capt $$ selfClosingTag "graphic" graphicattr
+blockToJATS _ (Para [Image (ident,_,kvs) _ (src, tit)]) = do
+  let (maintype, subtype) = imageMimeType src kvs
+  let attr = [("id", ident) | not (T.null ident)] ++
+             [("mimetype", maintype),
+              ("mime-subtype", subtype),
+              ("xlink:href", src)] ++
+             [("xlink:title", tit) | not (T.null tit)] ++
+             [(k,v) | (k,v) <- kvs, k `elem` ["baseline-shift",
+                        "content-type", "specific-use", "xlink:actuate",
+                        "xlink:href", "xlink:role", "xlink:show",
+                        "xlink:type"]]
+  return $ selfClosingTag "graphic" attr
 blockToJATS opts (Para lst) =
-  inTagsIndented "p" <$> inlinesToJATS opts lst
+  inTagsSimple "p" <$> inlinesToJATS opts lst
 blockToJATS opts (LineBlock lns) =
   blockToJATS opts $ linesToPara lns
-blockToJATS opts (BlockQuote blocks) =
-  inTagsIndented "disp-quote" <$> blocksToJATS opts blocks
-blockToJATS _ (CodeBlock (ident,classes,kvs) str) = return $
-  inTags False tag attr (flush (text (escapeStringForXML str)))
-    where attr  = [("id",ident) | not (null ident)] ++
-                  [("language",lang) | not (null lang)] ++
-                  [(k,v) | (k,v) <- kvs, k `elem` ["code-type",
-                    "code-version", "executable",
-                    "language-version", "orientation",
-                    "platforms", "position", "specific-use"]]
-          tag   = if null lang then "preformat" else "code"
-          lang  = case langs of
-                     (l:_) -> escapeStringForXML l
-                     []    -> ""
-          isLang l    = map toLower l `elem` map (map toLower) languages
-          langsFrom s = if isLang s
-                           then [s]
-                           else languagesByExtension . map toLower $ s
-          langs       = concatMap langsFrom classes
+blockToJATS opts (BlockQuote blocks) = do
+  tagSet <- ask
+  let blocksToJats' = if tagSet == TagSetArticleAuthoring
+                      then wrappedBlocksToJATS (not . isPara)
+                      else blocksToJATS
+  inTagsIndented "disp-quote" <$> blocksToJats' opts blocks
+blockToJATS _ (CodeBlock a str) = return $
+  inTags False tag attr (flush (text (T.unpack $ escapeStringForXML str)))
+    where (lang, attr) = codeAttr a
+          tag          = if T.null lang then "preformat" else "code"
 blockToJATS _ (BulletList []) = return empty
-blockToJATS opts (BulletList lst) = do
+blockToJATS opts (BulletList lst) =
   inTags True "list" [("list-type", "bullet")] <$>
-    listItemsToJATS opts Nothing lst
+  listItemsToJATS opts Nothing lst
 blockToJATS _ (OrderedList _ []) = return empty
 blockToJATS opts (OrderedList (start, numstyle, delimstyle) items) = do
-  let listType = case numstyle of
-                       DefaultStyle -> "order"
-                       Decimal      -> "order"
-                       Example      -> "order"
-                       UpperAlpha   -> "alpha-upper"
-                       LowerAlpha   -> "alpha-lower"
-                       UpperRoman   -> "roman-upper"
-                       LowerRoman   -> "roman-lower"
+  tagSet <- ask
+  let listType =
+        -- The Article Authoring tag set doesn't allow a more specific
+        -- @list-type@ attribute than "order".
+        if tagSet == TagSetArticleAuthoring
+        then "order"
+        else case numstyle of
+               DefaultStyle -> "order"
+               Decimal      -> "order"
+               Example      -> "order"
+               UpperAlpha   -> "alpha-upper"
+               LowerAlpha   -> "alpha-lower"
+               UpperRoman   -> "roman-upper"
+               LowerRoman   -> "roman-lower"
   let simpleList = start == 1 && (delimstyle == DefaultDelim ||
                                   delimstyle == Period)
   let markers = if simpleList
@@ -277,32 +348,36 @@ blockToJATS opts (OrderedList (start, numstyle, delimstyle) items) = do
                           orderedListMarkers (start, numstyle, delimstyle)
   inTags True "list" [("list-type", listType)] <$>
     listItemsToJATS opts markers items
-blockToJATS opts (DefinitionList lst) = do
+blockToJATS opts (DefinitionList lst) =
   inTags True "def-list" [] <$> deflistItemsToJATS opts lst
 blockToJATS _ b@(RawBlock f str)
-  | f == "jats"    = return $ text str -- raw XML block
+  | f == "jats"    = return $ text $ T.unpack str -- raw XML block
   | otherwise      = do
       report $ BlockNotRendered b
       return empty
 blockToJATS _ HorizontalRule = return empty -- not semantic
-blockToJATS opts (Table [] aligns widths headers rows) = do
-  let percent w    = show (truncate (100*w) :: Integer) ++ "*"
-  let coltags = vcat $ zipWith (\w al -> selfClosingTag "col"
-                       ([("width", percent w) | w > 0] ++
-                        [("align", alignmentToString al)])) widths aligns
-  thead <- if all null headers
-              then return empty
-              else inTagsIndented "thead" <$> tableRowToJATS opts True headers
-  tbody <- (inTagsIndented "tbody" . vcat) <$>
-                mapM (tableRowToJATS opts False) rows
-  return $ inTags True "table" [] $ coltags $$ thead $$ tbody
-blockToJATS opts (Table caption aligns widths headers rows) = do
-  captionDoc <- inTagsIndented "caption" <$> blockToJATS opts (Para caption)
-  tbl <- blockToJATS opts (Table [] aligns widths headers rows)
-  return $ inTags True "table-wrap" [] $ captionDoc $$ tbl
+blockToJATS opts (Table _ blkCapt specs th tb tf) =
+  case toLegacyTable blkCapt specs th tb tf of
+    ([], aligns, widths, headers, rows) -> captionlessTable aligns widths headers rows
+    (caption, aligns, widths, headers, rows) -> do
+      captionDoc <- inTagsIndented "caption" <$> blockToJATS opts (Para caption)
+      tbl <- captionlessTable aligns widths headers rows
+      return $ inTags True "table-wrap" [] $ captionDoc $$ tbl
+  where
+    captionlessTable aligns widths headers rows = do
+      let percent w = tshow (truncate (100*w) :: Integer) <> "*"
+      let coltags = vcat $ zipWith (\w al -> selfClosingTag "col"
+                           ([("width", percent w) | w > 0] ++
+                            [("align", alignmentToText al)])) widths aligns
+      thead <- if all null headers
+                  then return empty
+                  else inTagsIndented "thead" <$> tableRowToJATS opts True headers
+      tbody <- (inTagsIndented "tbody" . vcat) <$>
+                    mapM (tableRowToJATS opts False) rows
+      return $ inTags True "table" [] $ coltags $$ thead $$ tbody
 
-alignmentToString :: Alignment -> [Char]
-alignmentToString alignment = case alignment of
+alignmentToText :: Alignment -> Text
+alignmentToText alignment = case alignment of
                                  AlignLeft    -> "left"
                                  AlignRight   -> "right"
                                  AlignCenter  -> "center"
@@ -312,7 +387,7 @@ tableRowToJATS :: PandocMonad m
                   => WriterOptions
                   -> Bool
                   -> [[Block]]
-                  -> DB m Doc
+                  -> JATS m (Doc Text)
 tableRowToJATS opts isHeader cols =
   (inTagsIndented "tr" . vcat) <$> mapM (tableItemToJATS opts isHeader) cols
 
@@ -320,22 +395,39 @@ tableItemToJATS :: PandocMonad m
                    => WriterOptions
                    -> Bool
                    -> [Block]
-                   -> DB m Doc
+                   -> JATS m (Doc Text)
+tableItemToJATS opts isHeader [Plain item] =
+  inTags False (if isHeader then "th" else "td") [] <$>
+    inlinesToJATS opts item
 tableItemToJATS opts isHeader item =
-  (inTags True (if isHeader then "th" else "td") [] . vcat) <$>
+  (inTags False (if isHeader then "th" else "td") [] . vcat) <$>
     mapM (blockToJATS opts) item
 
 -- | Convert a list of inline elements to JATS.
-inlinesToJATS :: PandocMonad m => WriterOptions -> [Inline] -> DB m Doc
-inlinesToJATS opts lst = hcat <$> mapM (inlineToJATS opts) lst
+inlinesToJATS :: PandocMonad m => WriterOptions -> [Inline] -> JATS m (Doc Text)
+inlinesToJATS opts lst = hcat <$> mapM (inlineToJATS opts) (fixCitations lst)
+  where
+   fixCitations [] = []
+   fixCitations (x:xs) | needsFixing x =
+     x : Str (stringify ys) : fixCitations zs
+     where
+       needsFixing (RawInline (Format "jats") z) =
+           "<pub-id pub-id-type=" `T.isPrefixOf` z
+       needsFixing _           = False
+       isRawInline RawInline{} = True
+       isRawInline _           = False
+       (ys,zs)                 = break isRawInline xs
+   fixCitations (x:xs) = x : fixCitations xs
 
 -- | Convert an inline element to JATS.
-inlineToJATS :: PandocMonad m => WriterOptions -> Inline -> DB m Doc
-inlineToJATS _ (Str str) = return $ text $ escapeStringForXML str
+inlineToJATS :: PandocMonad m => WriterOptions -> Inline -> JATS m (Doc Text)
+inlineToJATS _ (Str str) = return $ text $ T.unpack $ escapeStringForXML str
 inlineToJATS opts (Emph lst) =
   inTagsSimple "italic" <$> inlinesToJATS opts lst
+inlineToJATS opts (Underline lst) =
+  inTagsSimple "underline" <$> inlinesToJATS opts lst
 inlineToJATS opts (Strong lst) =
-  inTags False "bold" [("role", "strong")] <$> inlinesToJATS opts lst
+  inTagsSimple "bold" <$> inlinesToJATS opts lst
 inlineToJATS opts (Strikeout lst) =
   inTagsSimple "strike" <$> inlinesToJATS opts lst
 inlineToJATS opts (Superscript lst) =
@@ -343,36 +435,52 @@ inlineToJATS opts (Superscript lst) =
 inlineToJATS opts (Subscript lst) =
   inTagsSimple "sub" <$> inlinesToJATS opts lst
 inlineToJATS opts (SmallCaps lst) =
-  inTags False "sc" [("role", "smallcaps")] <$>
-  inlinesToJATS opts lst
+  inTagsSimple "sc" <$> inlinesToJATS opts lst
 inlineToJATS opts (Quoted SingleQuote lst) = do
   contents <- inlinesToJATS opts lst
   return $ char '‘' <> contents <> char '’'
 inlineToJATS opts (Quoted DoubleQuote lst) = do
   contents <- inlinesToJATS opts lst
   return $ char '“' <> contents <> char '”'
-inlineToJATS _ (Code _ str) =
-  return $ inTagsSimple "monospace" $ text (escapeStringForXML str)
+inlineToJATS _ (Code a str) =
+  return $ inTags False tag attr $ literal (escapeStringForXML str)
+    where (lang, attr) = codeAttr a
+          tag          = if T.null lang then "monospace" else "code"
 inlineToJATS _ il@(RawInline f x)
-  | f == "jats" = return $ text x
+  | f == "jats" = return $ literal x
   | otherwise   = do
       report $ InlineNotRendered il
       return empty
-inlineToJATS _ LineBreak = return $ selfClosingTag "break" []
+inlineToJATS _ LineBreak = return cr -- not allowed as child of p
+-- see https://jats.nlm.nih.gov/publishing/tag-library/1.2/element/break.html
 inlineToJATS _ Space = return space
 inlineToJATS opts SoftBreak
   | writerWrapText opts == WrapPreserve = return cr
   | otherwise = return space
-inlineToJATS opts (Note contents) =
-  -- TODO technically only <p> tags are allowed inside
-  inTagsIndented "fn" <$> blocksToJATS opts contents
+inlineToJATS opts (Note contents) = do
+  tagSet <- ask
+  -- Footnotes must occur inline when using the Article Authoring tag set.
+  if tagSet == TagSetArticleAuthoring
+    then inTagsIndented "fn" <$> wrappedBlocksToJATS (not . isPara) opts contents
+    else do
+      notes <- gets jatsNotes
+      let notenum = case notes of
+                      (n, _):_ -> n + 1
+                      []       -> 1
+      thenote <- inTags True "fn" [("id","fn" <> tshow notenum)]
+                    <$> wrappedBlocksToJATS (not . isPara) opts
+                         (walk demoteHeaderAndRefs contents)
+      modify $ \st -> st{ jatsNotes = (notenum, thenote) : notes }
+      return $ inTags False "xref" [("ref-type", "fn"),
+                                    ("rid", "fn" <> tshow notenum)]
+             $ text (show notenum)
 inlineToJATS opts (Cite _ lst) =
   -- TODO revisit this after examining the jats.csl pipeline
   inlinesToJATS opts lst
 inlineToJATS opts (Span ("",_,[]) ils) = inlinesToJATS opts ils
 inlineToJATS opts (Span (ident,_,kvs) ils) = do
   contents <- inlinesToJATS opts ils
-  let attr = [("id",ident) | not (null ident)] ++
+  let attr = [("id",ident) | not (T.null ident)] ++
              [("xml:lang",l) | ("lang",l) <- kvs] ++
              [(k,v) | (k,v) <- kvs
                     ,  k `elem` ["content-type", "rationale",
@@ -392,31 +500,40 @@ inlineToJATS _ (Math t str) = do
   let tagtype = case t of
                      DisplayMath -> "disp-formula"
                      InlineMath  -> "inline-formula"
-  let rawtex = inTagsSimple "tex-math"
-                                $ text "<![CDATA[" <>
-                                  text str <>
-                                  text "]]>"
-  return $ inTagsSimple tagtype $
-             case res of
-                   Right r  -> inTagsSimple "alternatives" $
-                                  cr <> rawtex $$
-                                  (text $ Xml.ppcElement conf $ fixNS r)
-                   Left _   -> rawtex
-inlineToJATS _ (Link _attr [Str t] ('m':'a':'i':'l':'t':'o':':':email, _))
+
+  let rawtex = text "<![CDATA[" <> literal str <> text "]]>"
+  let texMath = inTagsSimple "tex-math" rawtex
+
+  tagSet <- ask
+  return . inTagsSimple tagtype $
+    case res of
+      Right r  -> let mathMl = text (Xml.ppcElement conf $ fixNS r)
+                  -- tex-math is unsupported in Article Authoring tag set
+                  in if tagSet == TagSetArticleAuthoring
+                     then mathMl
+                     else inTagsSimple "alternatives" $
+                          cr <> texMath $$ mathMl
+      Left _   -> if tagSet /= TagSetArticleAuthoring
+                  then texMath
+                  else rawtex
+inlineToJATS _ (Link _attr [Str t] (T.stripPrefix "mailto:" -> Just email, _))
   | escapeURI t == email =
-  return $ inTagsSimple "email" $ text (escapeStringForXML email)
-inlineToJATS opts (Link (ident,_,kvs) txt ('#':src, _)) = do
-  let attr = [("id", ident) | not (null ident)] ++
-             [("alt", stringify txt),
-              ("rid", src)] ++
+  return $ inTagsSimple "email" $ literal (escapeStringForXML email)
+inlineToJATS opts (Link (ident,_,kvs) txt (T.uncons -> Just ('#', src), _)) = do
+  let attr = [("id", ident) | not (T.null ident)] ++
+             [("alt", stringify txt) | not (null txt)] ++
+             [("rid", src)] ++
              [(k,v) | (k,v) <- kvs, k `elem` ["ref-type", "specific-use"]]
-  contents <- inlinesToJATS opts txt
-  return $ inTags False "xref" attr contents
+  if null txt
+     then return $ selfClosingTag "xref" attr
+     else do
+        contents <- inlinesToJATS opts txt
+        return $ inTags False "xref" attr contents
 inlineToJATS opts (Link (ident,_,kvs) txt (src, tit)) = do
-  let attr = [("id", ident) | not (null ident)] ++
+  let attr = [("id", ident) | not (T.null ident)] ++
              [("ext-link-type", "uri"),
               ("xlink:href", src)] ++
-             [("xlink:title", tit) | not (null tit)] ++
+             [("xlink:title", tit) | not (T.null tit)] ++
              [(k,v) | (k,v) <- kvs, k `elem` ["assigning-authority",
                                               "specific-use", "xlink:actuate",
                                               "xlink:role", "xlink:show",
@@ -424,20 +541,46 @@ inlineToJATS opts (Link (ident,_,kvs) txt (src, tit)) = do
   contents <- inlinesToJATS opts txt
   return $ inTags False "ext-link" attr contents
 inlineToJATS _ (Image (ident,_,kvs) _ (src, tit)) = do
-  let mbMT = getMimeType src
+  let mbMT = getMimeType (T.unpack src)
   let maintype = fromMaybe "image" $
                   lookup "mimetype" kvs `mplus`
-                  (takeWhile (/='/') <$> mbMT)
+                  (T.takeWhile (/='/') <$> mbMT)
   let subtype = fromMaybe "" $
                   lookup "mime-subtype" kvs `mplus`
-                  ((drop 1 . dropWhile (/='/')) <$> mbMT)
-  let attr = [("id", ident) | not (null ident)] ++
+                  ((T.drop 1 . T.dropWhile (/='/')) <$> mbMT)
+  let attr = [("id", ident) | not (T.null ident)] ++
              [("mimetype", maintype),
               ("mime-subtype", subtype),
               ("xlink:href", src)] ++
-             [("xlink:title", tit) | not (null tit)] ++
+             [("xlink:title", tit) | not (T.null tit)] ++
              [(k,v) | (k,v) <- kvs, k `elem` ["baseline-shift",
                         "content-type", "specific-use", "xlink:actuate",
                         "xlink:href", "xlink:role", "xlink:show",
                         "xlink:type"]]
   return $ selfClosingTag "inline-graphic" attr
+
+isParaOrList :: Block -> Bool
+isParaOrList Para{}           = True
+isParaOrList Plain{}          = True
+isParaOrList BulletList{}     = True
+isParaOrList OrderedList{}    = True
+isParaOrList DefinitionList{} = True
+isParaOrList _                = False
+
+isPara :: Block -> Bool
+isPara Para{}  = True
+isPara Plain{} = True
+isPara _       = False
+
+demoteHeaderAndRefs :: Block -> Block
+demoteHeaderAndRefs (Header _ _ ils) = Para ils
+demoteHeaderAndRefs (Div ("refs",cls,kvs) bs) =
+                       Div ("",cls,kvs) bs
+demoteHeaderAndRefs x = x
+
+parseDate :: Text -> Maybe Day
+parseDate s = msum (map (\fs -> parsetimeWith fs $ T.unpack s) formats) :: Maybe Day
+  where parsetimeWith = parseTimeM True defaultTimeLocale
+        formats = ["%x","%m/%d/%Y", "%D","%F", "%d %b %Y",
+                    "%e %B %Y", "%b. %e, %Y", "%B %e, %Y",
+                    "%Y%m%d", "%Y%m", "%Y"]

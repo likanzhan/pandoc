@@ -31,15 +31,19 @@ $endif$
 .\" line height
 .nr VS $if(lineheight)$$lineheight$$else$12p$endif$
 .\" font family: A, BM, H, HN, N, P, T, ZCM
-.fam $if(fontfamily)$$fontfamily$$else$T$endif$
+.fam $if(fontfamily)$$fontfamily$$else$P$endif$
 .\" paragraph indent
-.nr PI $if(indent)$$indent$$else$2m$endif$
+.nr PI $if(indent)$$indent$$else$0m$endif$
 .\" interparagraph space
-.nr PD 0.33v
+.nr PD 0.4v
 .\" footnote width
 .nr FL \n[LL]
 .\" footnote point size
 .nr FPS (\n[PS] - 2000)
+$if(papersize)$
+.\" paper size
+.ds paper $papersize$
+$endif$
 .\" color used for strikeout
 .defcolor strikecolor rgb 0.7 0.7 0.7
 .\" color for links (rgb)
@@ -53,6 +57,9 @@ $endif$
 .\" comment these out if you want a dot after section numbers:
 .als SN SN-NO-DOT
 .als SN-STYLE SN-NO-DOT
+.\" page numbers in footer, centered
+.rm CH
+.ds CF %
 .\" pdf outline fold level
 .nr PDFOUTLINE.FOLDLEVEL 3
 .\" start out in outline view
@@ -67,7 +74,7 @@ $endif$
 $if(hyphenate)$
 .hy
 $else$
-.nh \" Turn off hyphenation by default.
+.nh
 $endif$
 $if(has-inline-math)$
 .EQ
@@ -86,7 +93,10 @@ $for(author)$
 $author$
 $endfor$
 $if(date)$
-.ND "$date$"
+.AU
+.sp 0.5
+.ft R
+$date$
 $endif$
 $if(abstract)$
 .AB

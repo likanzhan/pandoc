@@ -27,7 +27,9 @@
  ;;; Code:
 
 (defvar pandoc-template-font-lock-keywords
-   '(("\\(\\$\\)\\(if\\|for\\)(\\([^)]+\\))\\(\\$\\)"
+  '(("\\(\\$--.*\\)$"
+      (1 font-lock-comment-face))
+    ("\\(\\$\\)\\(if\\|for\\)(\\([^)]+\\))\\(\\$\\)"
       (1 font-lock-preprocessor-face)
       (2 font-lock-keyword-face)
       (3 font-lock-variable-name-face)
@@ -50,9 +52,13 @@
  ;;;###autoload
 (define-derived-mode pandoc-template-mode fundamental-mode "Pandoc-Template"
   "A major mode for editing Pandoc-Template files."
-  :syntax-table nil
+  :syntax-table text-mode-syntax-table
   (setq-local font-lock-defaults
-              '(pandoc-template-font-lock-keywords)))
+              '(pandoc-template-font-lock-keywords))
+  (setq-local comment-start "$--")
+  (setq-local comment-start-skip "\\$--[ \t]*")
+  (setq-local comment-end "")
+  (setq-local comment-end-skip "[ \t]*$"))
 
 (provide 'pandoc-template-mode)
  ;;; pandoc-template.el ends here

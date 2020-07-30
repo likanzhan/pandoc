@@ -38,7 +38,11 @@ Pandoc (Meta {unMeta = fromList [("author",MetaList [MetaInlines [Str "John",Spa
 ,Para [Str "And:"]
 ,CodeBlock ("",[],[]) "this block is indented by two tabs\n\nThese should not be escaped:  \\$ \\\\ \\> \\[ \\{"
 ,Para [Str "And:"]
-,CodeBlock ("",["sourceCode","python"],[]) "def my_function(x):\n    return x + 1"
+,CodeBlock ("",["python"],[]) "def my_function(x):\n    return x + 1"
+,Para [Str "If",Space,Str "we",Space,Str "use",Space,Str "the",Space,Str "highlight",Space,Str "directive,",Space,Str "we",Space,Str "can",Space,Str "specify",Space,Str "a",Space,Str "default",Space,Str "language",SoftBreak,Str "for",Space,Str "literate",Space,Str "blocks."]
+,CodeBlock ("",["haskell"],[]) "-- this code is in haskell\ndata Tree = Leaf | Node Tree Tree"
+,CodeBlock ("",["haskell"],[]) "-- this code is in haskell too\ndata Nat = Zero | Succ Nat"
+,CodeBlock ("",["javascript"],[]) "-- this code is in javascript\nlet f = (x, y) => x + y"
 ,Header 1 ("lists",[],[]) [Str "Lists"]
 ,Header 2 ("unordered",[],[]) [Str "Unordered"]
 ,Para [Str "Asterisks",Space,Str "tight:"]
@@ -96,8 +100,8 @@ Pandoc (Meta {unMeta = fromList [("author",MetaList [MetaInlines [Str "John",Spa
 ,OrderedList (1,Decimal,Period)
  [[Para [Str "Item",Space,Str "1,",Space,Str "graf",Space,Str "one."]
   ,Para [Str "Item",Space,Str "1.",Space,Str "graf",Space,Str "two.",Space,Str "The",Space,Str "quick",Space,Str "brown",Space,Str "fox",Space,Str "jumped",Space,Str "over",Space,Str "the",Space,Str "lazy",Space,Str "dog\8217s",SoftBreak,Str "back."]]
- ,[Plain [Str "Item",Space,Str "2."]]
- ,[Plain [Str "Item",Space,Str "3."]]]
+ ,[Para [Str "Item",Space,Str "2."]]
+ ,[Para [Str "Item",Space,Str "3."]]]
 ,Para [Str "Nested:"]
 ,BulletList
  [[Plain [Str "Tab"]
@@ -107,17 +111,17 @@ Pandoc (Meta {unMeta = fromList [("author",MetaList [MetaInlines [Str "John",Spa
      [[Plain [Str "Tab"]]]]]]]
 ,Para [Str "Here\8217s",Space,Str "another:"]
 ,OrderedList (1,Decimal,Period)
- [[Plain [Str "First"]]
+ [[Para [Str "First"]]
  ,[Para [Str "Second:"]
   ,BlockQuote
    [BulletList
     [[Plain [Str "Fee"]]
     ,[Plain [Str "Fie"]]
     ,[Plain [Str "Foe"]]]]]
- ,[Plain [Str "Third"]]]
+ ,[Para [Str "Third"]]]
 ,Header 2 ("fancy-list-markers",[],[]) [Str "Fancy",Space,Str "list",Space,Str "markers"]
 ,OrderedList (2,Decimal,TwoParens)
- [[Plain [Str "begins",Space,Str "with",Space,Str "2"]]
+ [[Para [Str "begins",Space,Str "with",Space,Str "2"]]
  ,[Para [Str "and",Space,Str "now",Space,Str "3"]
   ,Para [Str "with",Space,Str "a",Space,Str "continuation"]
   ,OrderedList (4,LowerRoman,Period)
@@ -240,72 +244,194 @@ Pandoc (Meta {unMeta = fromList [("author",MetaList [MetaInlines [Str "John",Spa
  ,[Str "Continuation",Space,Str "line"]
  ,[Str "\160\160and",Space,Str "another"]]
 ,Header 1 ("simple-tables",[],[]) [Str "Simple",Space,Str "Tables"]
-,Table [] [AlignDefault,AlignDefault,AlignDefault] [0.0,0.0,0.0]
- [[Plain [Str "col",Space,Str "1"]]
- ,[Plain [Str "col",Space,Str "2"]]
- ,[Plain [Str "col",Space,Str "3"]]]
- [[[Plain [Str "r1",Space,Str "a"]]
-  ,[Plain [Str "b"]]
-  ,[Plain [Str "c"]]]
- ,[[Plain [Str "r2",Space,Str "d"]]
-  ,[Plain [Str "e"]]
-  ,[Plain [Str "f"]]]]
+,Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidthDefault)
+ ,(AlignDefault,ColWidthDefault)
+ ,(AlignDefault,ColWidthDefault)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "col",Space,Str "1"]]
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "col",Space,Str "2"]]
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "col",Space,Str "3"]]]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r1",Space,Str "a"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "b"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "c"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r2",Space,Str "d"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "e"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "f"]]]])]
+ (TableFoot ("",[],[])
+ [])
 ,Para [Str "Headless"]
-,Table [] [AlignDefault,AlignDefault,AlignDefault] [0.0,0.0,0.0]
- [[]
- ,[]
- ,[]]
- [[[Plain [Str "r1",Space,Str "a"]]
-  ,[Plain [Str "b"]]
-  ,[Plain [Str "c"]]]
- ,[[Plain [Str "r2",Space,Str "d"]]
-  ,[Plain [Str "e"]]
-  ,[Plain [Str "f"]]]]
+,Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidthDefault)
+ ,(AlignDefault,ColWidthDefault)
+ ,(AlignDefault,ColWidthDefault)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r1",Space,Str "a"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "b"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "c"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r2",Space,Str "d"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "e"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "f"]]]])]
+ (TableFoot ("",[],[])
+ [])
 ,Header 1 ("grid-tables",[],[]) [Str "Grid",Space,Str "Tables"]
-,Table [] [AlignDefault,AlignDefault,AlignDefault] [0.2375,0.15,0.1625]
- [[Plain [Str "col",Space,Str "1"]]
- ,[Plain [Str "col",Space,Str "2"]]
- ,[Plain [Str "col",Space,Str "3"]]]
- [[[Plain [Str "r1",Space,Str "a",SoftBreak,Str "r1",Space,Str "bis"]]
-  ,[Plain [Str "b",SoftBreak,Str "b",Space,Str "2"]]
-  ,[Plain [Str "c",SoftBreak,Str "c",Space,Str "2"]]]
- ,[[Plain [Str "r2",Space,Str "d"]]
-  ,[Plain [Str "e"]]
-  ,[Plain [Str "f"]]]]
+,Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidth 0.2375)
+ ,(AlignDefault,ColWidth 0.15)
+ ,(AlignDefault,ColWidth 0.1625)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "col",Space,Str "1"]]
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "col",Space,Str "2"]]
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   [Plain [Str "col",Space,Str "3"]]]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r1",Space,Str "a",SoftBreak,Str "r1",Space,Str "bis"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "b",SoftBreak,Str "b",Space,Str "2"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "c",SoftBreak,Str "c",Space,Str "2"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r2",Space,Str "d"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "e"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "f"]]]])]
+ (TableFoot ("",[],[])
+ [])
 ,Para [Str "Headless"]
-,Table [] [AlignDefault,AlignDefault,AlignDefault] [0.2375,0.15,0.1625]
- [[]
- ,[]
- ,[]]
- [[[Plain [Str "r1",Space,Str "a",SoftBreak,Str "r1",Space,Str "bis"]]
-  ,[Plain [Str "b",SoftBreak,Str "b",Space,Str "2"]]
-  ,[Plain [Str "c",SoftBreak,Str "c",Space,Str "2"]]]
- ,[[Plain [Str "r2",Space,Str "d"]]
-  ,[Plain [Str "e"]]
-  ,[Plain [Str "f"]]]]
+,Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidth 0.2375)
+ ,(AlignDefault,ColWidth 0.15)
+ ,(AlignDefault,ColWidth 0.1625)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r1",Space,Str "a",SoftBreak,Str "r1",Space,Str "bis"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "b",SoftBreak,Str "b",Space,Str "2"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "c",SoftBreak,Str "c",Space,Str "2"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r2",Space,Str "d"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "e"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "f"]]]])]
+ (TableFoot ("",[],[])
+ [])
 ,Para [Str "Spaces",Space,Str "at",Space,Str "ends",Space,Str "of",Space,Str "lines"]
-,Table [] [AlignDefault,AlignDefault,AlignDefault] [0.2375,0.15,0.1625]
- [[]
- ,[]
- ,[]]
- [[[Plain [Str "r1",Space,Str "a",SoftBreak,Str "r1",Space,Str "bis"]]
-  ,[Plain [Str "b",SoftBreak,Str "b",Space,Str "2"]]
-  ,[Plain [Str "c",SoftBreak,Str "c",Space,Str "2"]]]
- ,[[Plain [Str "r2",Space,Str "d"]]
-  ,[Plain [Str "e"]]
-  ,[Plain [Str "f"]]]]
+,Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidth 0.2375)
+ ,(AlignDefault,ColWidth 0.15)
+ ,(AlignDefault,ColWidth 0.1625)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r1",Space,Str "a",SoftBreak,Str "r1",Space,Str "bis"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "b",SoftBreak,Str "b",Space,Str "2"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "c",SoftBreak,Str "c",Space,Str "2"]]]
+  ,Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "r2",Space,Str "d"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "e"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "f"]]]])]
+ (TableFoot ("",[],[])
+ [])
 ,Para [Str "Multiple",Space,Str "blocks",Space,Str "in",Space,Str "a",Space,Str "cell"]
-,Table [] [AlignDefault,AlignDefault,AlignDefault] [0.2375,0.15,0.1625]
- [[]
- ,[]
- ,[]]
- [[[Para [Str "r1",Space,Str "a"]
-   ,Para [Str "r1",Space,Str "bis"]]
-  ,[BulletList
-    [[Plain [Str "b"]]
-    ,[Plain [Str "b",Space,Str "2"]]
-    ,[Plain [Str "b",Space,Str "2"]]]]
-  ,[Plain [Str "c",SoftBreak,Str "c",Space,Str "2",SoftBreak,Str "c",Space,Str "2"]]]]
+,Table ("",[],[]) (Caption Nothing
+ [])
+ [(AlignDefault,ColWidth 0.2375)
+ ,(AlignDefault,ColWidth 0.15)
+ ,(AlignDefault,ColWidth 0.1625)]
+ (TableHead ("",[],[])
+ [Row ("",[],[])
+  [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []
+  ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+   []]])
+ [(TableBody ("",[],[]) (RowHeadColumns 0)
+  []
+  [Row ("",[],[])
+   [Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Para [Str "r1",Space,Str "a"]
+    ,Para [Str "r1",Space,Str "bis"]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [BulletList
+     [[Plain [Str "b"]]
+     ,[Plain [Str "b",Space,Str "2"]]
+     ,[Plain [Str "b",Space,Str "2"]]]]
+   ,Cell ("",[],[]) AlignDefault (RowSpan 1) (ColSpan 1)
+    [Plain [Str "c",SoftBreak,Str "c",Space,Str "2",SoftBreak,Str "c",Space,Str "2"]]]])]
+ (TableFoot ("",[],[])
+ [])
 ,Header 1 ("footnotes",[],[]) [Str "Footnotes"]
 ,Para [Note [Para [Str "Note",Space,Str "with",Space,Str "one",Space,Str "line."]]]
 ,Para [Note [Para [Str "Note",Space,Str "with",SoftBreak,Str "continuation",Space,Str "line."]]]
@@ -317,7 +443,7 @@ Pandoc (Meta {unMeta = fromList [("author",MetaList [MetaInlines [Str "John",Spa
 ,Para [Math DisplayMath "E=mc^2"]
 ,Para [Math DisplayMath "E = mc^2"]
 ,Para [Math DisplayMath "E = mc^2",Math DisplayMath "\\alpha = \\beta"]
-,Para [Math DisplayMath "E &= mc^2\\\\\nF &= \\pi E",Math DisplayMath "F &= \\gamma \\alpha^2"]
+,Para [Math DisplayMath "\\begin{aligned}\nE &= mc^2\\\\\nF &= \\pi E\n\\end{aligned}",Math DisplayMath "F &= \\gamma \\alpha^2"]
 ,Para [Str "All",Space,Str "done."]
 ,Header 1 ("default-role",[],[]) [Str "Default-Role"]
 ,Para [Str "Try",Space,Str "changing",Space,Str "the",Space,Str "default",Space,Str "role",Space,Str "to",Space,Str "a",Space,Str "few",Space,Str "different",Space,Str "things."]
@@ -326,10 +452,10 @@ Pandoc (Meta {unMeta = fromList [("author",MetaList [MetaInlines [Str "John",Spa
 ,Para [Math DisplayMath "\\alpha = beta",Math DisplayMath "E = mc^2"]
 ,Para [Str "Some",Space,Superscript [Str "of"],Space,Str "these",Space,Superscript [Str "words"],Space,Str "are",Space,Str "in",Space,Superscript [Str "superscript"],Str "."]
 ,Para [Str "Reset",Space,Str "default-role",Space,Str "to",Space,Str "the",Space,Str "default",Space,Str "default."]
-,Para [Str "And",Space,Str "now",Space,Str "some-invalid-string-3231231",Space,Str "is",Space,Str "nonsense."]
+,Para [Str "And",Space,Str "now",Space,Span ("",["title-ref"],[]) [Str "some-invalid-string-3231231"],Space,Str "is",Space,Str "nonsense."]
 ,Para [Str "And",Space,Str "now",Space,Str "with",Space,RawInline (Format "html") "<b>inline</b> <span id=\"test\">HTML</span>",Str "."]
-,Para [Str "And",Space,Str "some",Space,Str "inline",Space,Str "haskell",Space,Code ("",["haskell","sourceCode"],[]) "fmap id [1,2..10]",Str "."]
-,Para [Str "Indirect",Space,Str "python",Space,Str "role",Space,Code ("",["py","python","indirect","sourceCode"],[]) "[x*x for x in [1,2,3,4,5]]",Str "."]
-,Para [Str "Different",Space,Str "indirect",Space,Str "C",Space,Code ("",["c","different-indirect","sourceCode"],[]) "int x = 15;",Str "."]
+,Para [Str "And",Space,Str "some",Space,Str "inline",Space,Str "haskell",Space,Code ("",["haskell"],[]) "fmap id [1,2..10]",Str "."]
+,Para [Str "Indirect",Space,Str "python",Space,Str "role",Space,Code ("",["py","python","indirect"],[]) "[x*x for x in [1,2,3,4,5]]",Str "."]
+,Para [Str "Different",Space,Str "indirect",Space,Str "C",Space,Code ("",["c","different-indirect"],[]) "int x = 15;",Str "."]
 ,Header 2 ("literal-symbols",[],[]) [Str "Literal",Space,Str "symbols"]
 ,Para [Str "2*2",Space,Str "=",Space,Str "4*1"]]

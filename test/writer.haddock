@@ -236,6 +236,7 @@ Same thing but with paragraphs:
 #fancy-list-markers#
 
 (2) begins with 2
+
 (3) and now 3
 
     with a continuation
@@ -455,14 +456,14 @@ ______________________________________________________________________________
 #latex#
 
 -   
--   2 + 2 = 4
--   /x/ ∈ /y/
--   /α/ ∧ /ω/
--   223
--   /p/-Tree
+-   \(2+2=4\)
+-   \(x \in y\)
+-   \(\alpha \wedge \omega\)
+-   \(223\)
+-   \(p\)-Tree
 -   Here’s some display math:
-    $$\\frac{d}{dx}f(x)=\\lim_{h\\to 0}\\frac{f(x+h)-f(x)}{h}$$
--   Here’s one that has a line break in it: /α/ + /ω/ × /x/2.
+    \[\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}\]
+-   Here’s one that has a line break in it: \(\alpha + \omega \times x^2\).
 
 These shouldn’t be math:
 

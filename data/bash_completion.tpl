@@ -4,7 +4,7 @@
 
 _pandoc()
 {
-    local cur prev opts lastc informats outformats datadir
+    local cur prev opts lastc informats outformats datafiles
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -14,7 +14,7 @@ _pandoc()
     informats="%s"
     outformats="%s"
     highlight_styles="%s"
-    datadir="%s"
+    datafiles="%s"
 
     case "${prev}" in
          --from|-f|--read|-r)
@@ -29,12 +29,16 @@ _pandoc()
              COMPREPLY=( $(compgen -W "references javascript none" -- ${cur}) )
              return 0
              ;;
+         --ipynb-output)
+             COMPREPLY=( $(compgen -W "all none best" -- ${cur}) )
+             return 0
+             ;;
          --pdf-engine)
-             COMPREPLY=( $(compgen -W "pdflatex lualatex xelatex wkhtmltopdf weasyprint prince context pdfroff" -- ${cur}) )
+             COMPREPLY=( $(compgen -W "pdflatex lualatex xelatex latexmk tectonic wkhtmltopdf weasyprint prince context pdfroff" -- ${cur}) )
              return 0
              ;;
          --print-default-data-file)
-             COMPREPLY=( $(compgen -W "reference.odt reference.docx $(find ${datadir} | sed -e 's/.*\/data\///')" -- ${cur}) )
+             COMPREPLY=( $(compgen -W "${datafiles}" -- ${cur}) )
              return 0
              ;;
          --wrap)

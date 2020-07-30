@@ -1,26 +1,15 @@
-{-# LANGUAGE PackageImports #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
--- This custom Prelude emulates the API of the prelude
--- with base 4.8.
+-- The intent is that this Prelude provide the API of
+-- the base 4.11 Prelude in a way that is portable for
+-- all base versions.
 
 module Prelude
 (
-  module P
-#if MIN_VERSION_base(4,8,0)
-#else
-, Monoid(..)
-, Applicative(..)
-, (<$>)
-, (<$)
-#endif
+  module Prelude.Compat
+, Semigroup(..)
 )
 where
 
-#if MIN_VERSION_base(4,8,0)
-import "base" Prelude as P
-#else
-import "base" Prelude as P
-import Control.Applicative
-import Data.Monoid
-#endif
+import Prelude.Compat
+import Data.Semigroup (Semigroup(..))  -- includes (<>)

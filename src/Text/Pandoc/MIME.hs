@@ -1,41 +1,25 @@
-{-
-Copyright (C) 2011-2017 John MacFarlane <jgm@berkeley.edu>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.MIME
-   Copyright   : Copyright (C) 2011-2017 John MacFarlane
+   Copyright   : Copyright (C) 2011-2020 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
    Stability   : alpha
    Portability : portable
 
-Mime type lookup for ODT writer.
+Mime type lookup.
 -}
 module Text.Pandoc.MIME ( MimeType, getMimeType, getMimeTypeDef,
-                          extensionFromMimeType )where
-import Data.Char (toLower)
+                          extensionFromMimeType, mediaCategory ) where
 import Data.List (isPrefixOf, isSuffixOf)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import qualified Data.Text as T
+import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Tuple (swap)
 import System.FilePath
 
-type MimeType = String
+type MimeType = T.Text
 
 -- | Determine mime type appropriate for file path.
 getMimeType :: FilePath -> Maybe MimeType
@@ -46,27 +30,37 @@ getMimeType fp
   | "Formula-" `isPrefixOf` fp && "/" `isSuffixOf` fp =
         Just "application/vnd.oasis.opendocument.formula"
   -- generic
-  | otherwise = M.lookup (map toLower $ drop 1 $ takeExtension fp) mimeTypes
+  | otherwise = M.lookup (T.toLower $ T.drop 1 $ T.pack $ takeExtension fp) mimeTypes
 
 -- | Determime mime type appropriate for file path, defaulting to
 -- “application/octet-stream” if nothing else fits.
 getMimeTypeDef :: FilePath -> MimeType
 getMimeTypeDef = fromMaybe "application/octet-stream" . getMimeType
 
-extensionFromMimeType :: MimeType -> Maybe String
+extensionFromMimeType :: MimeType -> Maybe T.Text
 extensionFromMimeType mimetype =
-  M.lookup (takeWhile (/=';') mimetype) reverseMimeTypes
+  M.lookup (T.takeWhile (/=';') mimetype) reverseMimeTypes
   -- note:  we just look up the basic mime type, dropping the content-encoding etc.
 
-reverseMimeTypes :: M.Map MimeType String
-reverseMimeTypes = M.fromList $ map (\(k,v) -> (v,k)) mimeTypesList
+-- | Determine general media category for file path, e.g.
+--
+-- prop> mediaCategory "foo.jpg" = Just "image"
+mediaCategory :: FilePath -> Maybe T.Text
+mediaCategory fp = getMimeType fp >>= listToMaybe . T.splitOn "/"
 
-mimeTypes :: M.Map String MimeType
+reverseMimeTypes :: M.Map MimeType T.Text
+reverseMimeTypes = M.fromList $ map swap mimeTypesList
+
+mimeTypes :: M.Map T.Text MimeType
 mimeTypes = M.fromList mimeTypesList
 
-mimeTypesList :: [(String, MimeType)]
-mimeTypesList = -- List borrowed from happstack-server.
-           [("gz","application/x-gzip")
+-- | Collection of common mime types.
+-- Except for first entry, list borrowed from
+-- <https://github.com/Happstack/happstack-server/blob/master/src/Happstack/Server/FileServe/BuildingBlocks.hs happstack-server>
+mimeTypesList :: [(T.Text, MimeType)]
+mimeTypesList =
+           [("cpt","image/x-corelphotopaint")
+           ,("gz","application/x-gzip")
            ,("cabal","application/x-cabal")
            ,("%","application/x-trash")
            ,("323","text/h323")
@@ -172,7 +166,7 @@ mimeTypesList = -- List borrowed from happstack-server.
            ,("eml","message/rfc822")
            ,("ent","chemical/x-ncbi-asn1-ascii")
            ,("eot","application/vnd.ms-fontobject")
-           ,("eps","application/postscript")
+           ,("eps","application/eps")
            ,("etx","text/x-setext")
            ,("exe","application/x-msdos-program")
            ,("ez","application/andrew-inset")
@@ -200,6 +194,7 @@ mimeTypesList = -- List borrowed from happstack-server.
            ,("gjc","chemical/x-gaussian-input")
            ,("gjf","chemical/x-gaussian-input")
            ,("gl","video/gl")
+           ,("glsl","text/plain")
            ,("gnumeric","application/x-gnumeric")
            ,("gpt","chemical/x-mopac-graph")
            ,("gsf","application/x-font")
@@ -325,6 +320,7 @@ mimeTypesList = -- List borrowed from happstack-server.
            ,("ogv","video/ogg")
            ,("ogx","application/ogg")
            ,("old","application/x-trash")
+           ,("opus","audio/ogg")
            ,("otg","application/vnd.oasis.opendocument.graphics-template")
            ,("oth","application/vnd.oasis.opendocument.text-web")
            ,("otp","application/vnd.oasis.opendocument.presentation-template")
@@ -465,7 +461,7 @@ mimeTypesList = -- List borrowed from happstack-server.
            ,("ts","text/texmacs")
            ,("tsp","application/dsptype")
            ,("tsv","text/tab-separated-values")
-           ,("ttf","application/x-font-truetype")
+           ,("ttf","application/font-sfnt")
            ,("txt","text/plain")
            ,("udeb","application/x-debian-package")
            ,("uls","text/iuls")
@@ -487,6 +483,7 @@ mimeTypesList = -- List borrowed from happstack-server.
            ,("wbmp","image/vnd.wap.wbmp")
            ,("wbxml","application/vnd.wap.wbxml")
            ,("webm","video/webm")
+           ,("webp","image/webp")
            ,("wk","application/x-123")
            ,("wm","video/x-ms-wm")
            ,("wma","audio/x-ms-wma")
@@ -525,4 +522,3 @@ mimeTypesList = -- List borrowed from happstack-server.
            ,("zip","application/zip")
            ,("zmt","chemical/x-mopac-input")
            ]
-

@@ -1,7 +1,18 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
--- Utility functions for the test suite.
+{- |
+   Module      : Tests.Helpers
+   Copyright   : © 2006-2020 John MacFarlane
+   License     : GNU GPL, version 2 or above
 
+   Maintainer  : John MacFarlane <jgm@berkeley@edu>
+   Stability   : alpha
+   Portability : portable
+
+Utility functions for the test suite.
+-}
 module Tests.Helpers ( test
                      , TestResult(..)
                      , showDiff
@@ -13,6 +24,7 @@ module Tests.Helpers ( test
                      )
                      where
 
+import Prelude
 import Data.Algorithm.Diff
 import qualified Data.Map as M
 import Data.Text (Text, unpack)
@@ -76,19 +88,32 @@ showDiff (l,r) (Both _ _ : ds) =
   showDiff (l+1,r+1) ds
 
 -- | Find pandoc executable relative to test-pandoc
--- First, try in same directory (e.g. if both in ~/.cabal/bin)
--- Second, try ../pandoc (e.g. if in dist/XXX/build/test-pandoc)
 findPandoc :: IO FilePath
 findPandoc = do
   testExePath <- getExecutablePath
-  let testExeDir = takeDirectory testExePath
-  found <- doesFileExist (testExeDir </> "pandoc")
-  return $ if found
-              then testExeDir </> "pandoc"
-              else case splitDirectories testExeDir of
-                         [] -> error "test-pandoc: empty testExeDir"
-                         xs -> joinPath (init xs) </> "pandoc" </> "pandoc"
-
+  let pandocDir =
+        case reverse (splitDirectories (takeDirectory testExePath)) of
+             -- cabalv2 with --disable-optimization
+             "test-pandoc" : "build" : "noopt" : "test-pandoc" : "t" : ps
+               -> joinPath (reverse ps) </>
+                  "x" </> "pandoc" </> "noopt" </> "build" </> "pandoc"
+             -- cabalv2 without --disable-optimization
+             "test-pandoc" : "build" : "test-pandoc" : "t" : ps
+               -> joinPath (reverse ps) </>
+                  "x" </> "pandoc" </> "build" </> "pandoc"
+             -- cabalv1
+             "test-pandoc" : "build" : ps
+               -> joinPath (reverse ps) </> "build" </> "pandoc"
+             _ -> error $ "findPandoc: could not find pandoc executable"
+  let pandocPath = pandocDir </> "pandoc"
+#ifdef _WINDOWS
+                             <.> "exe"
+#endif
+  found <- doesFileExist pandocPath
+  if found
+     then return pandocPath
+     else error $ "findPandoc: could not find pandoc executable at "
+                   ++ pandocPath
 
 vividize :: Diff String -> String
 vividize (Both s _) = "  " ++ s
@@ -111,13 +136,13 @@ instance ToString Pandoc where
    where s = case d of
                   (Pandoc (Meta m) _)
                     | M.null m  -> Nothing
-                    | otherwise -> Just "" -- need this to get meta output
+                    | otherwise -> Just mempty -- need this to get meta output
 
 instance ToString Blocks where
   toString = unpack . purely (writeNative def) . toPandoc
 
 instance ToString Inlines where
-  toString = trimr . unpack . purely (writeNative def) . toPandoc
+  toString = unpack . trimr . purely (writeNative def) . toPandoc
 
 instance ToString String where
   toString = id

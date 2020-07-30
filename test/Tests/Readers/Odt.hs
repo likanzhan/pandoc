@@ -1,15 +1,30 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
+{- |
+   Module      : Tests.Readers.Odt
+   Copyright   : © 2015-2020 John MacFarlane
+                   2015 Martin Linnemann
+   License     : GNU GPL, version 2 or above
+
+   Maintainer  : John MacFarlane <jgm@berkeley.edu>
+   Stability   : alpha
+   Portability : portable
+
+Tests for the ODT reader.
+-}
 module Tests.Readers.Odt (tests) where
 
+import Prelude
 import Control.Monad (liftM)
-import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString as BS
-import qualified Text.Pandoc.UTF8 as UTF8
+import qualified Data.ByteString.Lazy as B
 import qualified Data.Map as M
 import Data.Text (unpack)
+import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty
 import Tests.Helpers
 import Text.Pandoc
-import System.IO.Unsafe (unsafePerformIO) -- TODO  temporary
+import qualified Text.Pandoc.UTF8 as UTF8
 
 defopts :: ReaderOptions
 defopts = def{ readerExtensions = getDefaultExtensions "odt" }
@@ -47,7 +62,7 @@ instance ToString NoNormPandoc where
    where s = case d of
                   NoNormPandoc (Pandoc (Meta m) _)
                     | M.null m  -> Nothing
-                    | otherwise -> Just "" -- need this for Meta output
+                    | otherwise -> Just mempty -- need this for Meta output
 
 instance ToPandoc NoNormPandoc where
   toPandoc = unNoNorm
@@ -138,6 +153,7 @@ namesOfTestsComparingToMarkdown  = [ "bold"
                                    , "endnote"
                                    , "externalLink"
                                    , "footnote"
+                                   , "formula"
                                    , "headers"
 --                                 , "horizontalRule"
                                    , "italic"

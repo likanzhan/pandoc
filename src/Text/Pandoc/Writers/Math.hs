@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Text.Pandoc.Writers.Math
   ( texMathToInlines
   , convertMath
@@ -6,29 +7,31 @@ module Text.Pandoc.Writers.Math
   )
 where
 
-import Text.Pandoc.Class
+import qualified Data.Text as T
+import Text.Pandoc.Class.PandocMonad
 import Text.Pandoc.Definition
 import Text.Pandoc.Logging
 import Text.TeXMath (DisplayType (..), Exp, readTeX, writePandoc)
+import Text.Pandoc.Options (defaultMathJaxURL, defaultKaTeXURL)
 
 -- | Converts a raw TeX math formula to a list of 'Pandoc' inlines.
 -- Defaults to raw formula between @$@ or @$$@ characters if entire formula
 -- can't be converted.
 texMathToInlines :: PandocMonad m
                  => MathType
-                 -> String    -- ^ String to parse (assumes @'\n'@ line endings)
+                 -> T.Text         -- ^ String to parse (assumes @'\n'@ line endings)
                  -> m [Inline]
 texMathToInlines mt inp = do
   res <- convertMath writePandoc mt inp
   case res of
        Right (Just ils)  -> return ils
-       Right (Nothing)   -> do
+       Right Nothing   -> do
          report $ CouldNotConvertTeXMath inp ""
          return [mkFallback mt inp]
        Left il           -> return [il]
 
-mkFallback :: MathType -> String -> Inline
-mkFallback mt str = Str (delim ++ str ++ delim)
+mkFallback :: MathType -> T.Text -> Inline
+mkFallback mt str = Str (delim <> str <> delim)
    where delim = case mt of
                       DisplayMath -> "$$"
                       InlineMath  -> "$"
@@ -37,9 +40,9 @@ mkFallback mt str = Str (delim ++ str ++ delim)
 -- issuing a warning and producing a fallback (a raw string)
 -- on failure.
 convertMath :: PandocMonad m
-            => (DisplayType -> [Exp] -> a) -> MathType -> String
+            => (DisplayType -> [Exp] -> a) -> MathType -> T.Text
             -> m (Either Inline a)
-convertMath writer mt str = do
+convertMath writer mt str =
   case writer dt <$> readTeX str of
        Right r  -> return (Right r)
        Left e   -> do
@@ -48,9 +51,3 @@ convertMath writer mt str = do
    where dt = case mt of
                    DisplayMath -> DisplayBlock
                    InlineMath  -> DisplayInline
-
-defaultMathJaxURL :: String
-defaultMathJaxURL = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/"
-
-defaultKaTeXURL :: String
-defaultKaTeXURL = "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.6.0/"

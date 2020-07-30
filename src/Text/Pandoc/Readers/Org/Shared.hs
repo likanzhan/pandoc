@@ -1,25 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-
-Copyright (C) 2014-2017 Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
 {- |
    Module      : Text.Pandoc.Readers.Org.Shared
-   Copyright   : Copyright (C) 2014-2017 Albert Krewinkel
+   Copyright   : Copyright (C) 2014-2020 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -27,51 +9,53 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 Utility functions used in other Pandoc Org modules.
 -}
 module Text.Pandoc.Readers.Org.Shared
-  ( cleanLinkString
+  ( cleanLinkText
   , isImageFilename
   , originalLang
   , translateLang
+  , exportsCode
   ) where
 
 import Data.Char (isAlphaNum)
-import Data.List (isPrefixOf, isSuffixOf)
-
+import Data.Text (Text)
+import qualified Data.Text as T
+import System.FilePath (isValid, takeExtension)
+import Text.Pandoc.Shared (elemText)
 
 -- | Check whether the given string looks like the path to of URL of an image.
-isImageFilename :: String -> Bool
-isImageFilename filename =
-  any (\x -> ('.':x)  `isSuffixOf` filename) imageExtensions &&
-  (any (\x -> (x ++ "://") `isPrefixOf` filename) protocols ||
-   ':' `notElem` filename)
+isImageFilename :: Text -> Bool
+isImageFilename fp = hasImageExtension && (isValid (T.unpack fp) || isKnownProtocolUri)
  where
-   imageExtensions = [ "jpeg" , "jpg" , "png" , "gif" , "svg" ]
+   hasImageExtension = takeExtension (T.unpack $ T.toLower fp)
+                       `elem` imageExtensions
+   isKnownProtocolUri = any (\x -> (x <> "://") `T.isPrefixOf` fp) protocols
+
+   imageExtensions = [ ".jpeg", ".jpg", ".png", ".gif", ".svg" ]
    protocols = [ "file", "http", "https" ]
 
 -- | Cleanup and canonicalize a string describing a link.  Return @Nothing@ if
 -- the string does not appear to be a link.
-cleanLinkString :: String -> Maybe String
-cleanLinkString s =
-  case s of
-    '/':_                  -> Just $ "file://" ++ s  -- absolute path
-    '.':'/':_              -> Just s                 -- relative path
-    '.':'.':'/':_          -> Just s                 -- relative path
-    -- Relative path or URL (file schema)
-    'f':'i':'l':'e':':':s' -> Just $ if "//" `isPrefixOf` s' then s else s'
-    _                      | isUrl s            -> Just s                 -- URL
-    _                      -> Nothing
- where
-   isUrl :: String -> Bool
-   isUrl cs =
-     let (scheme, path) = break (== ':') cs
-     in all (\c -> isAlphaNum c || c `elem` (".-"::String)) scheme
-          && not (null path)
+cleanLinkText :: Text -> Maybe Text
+cleanLinkText s
+  | Just _ <- T.stripPrefix "/" s      = Just $ "file://" <> s -- absolute path
+  | Just _ <- T.stripPrefix "./" s     = Just s                -- relative path
+  | Just _ <- T.stripPrefix "../" s    = Just s                -- relative path
+  -- Relative path or URL (file schema)
+  | Just s' <- T.stripPrefix "file:" s = Just $ if "//" `T.isPrefixOf` s' then s else s'
+  | otherwise                          = if isUrl s then Just s else Nothing
+  where
+    isUrl :: Text -> Bool
+    isUrl cs =
+      let (scheme, path) = T.break (== ':') cs
+      in T.all (\c -> isAlphaNum c || c `elemText` ".-") scheme
+         && not (T.null path)
 
 -- | Creates an key-value pair marking the original language name specified for
 -- a piece of source code.
 
 -- | Creates an key-value attributes marking the original language name
 -- specified for a piece of source code.
-originalLang :: String -> [(String, String)]
+originalLang :: Text -> [(Text, Text)]
 originalLang lang =
   let transLang = translateLang lang
   in if transLang == lang
@@ -81,7 +65,7 @@ originalLang lang =
 -- | Translate from Org-mode's programming language identifiers to those used
 -- by Pandoc.  This is useful to allow for proper syntax highlighting in
 -- Pandoc output.
-translateLang :: String -> String
+translateLang :: Text -> Text
 translateLang cs =
   case cs of
     "C"          -> "c"
@@ -93,3 +77,6 @@ translateLang cs =
     "sh"         -> "bash"
     "sqlite"     -> "sql"
     _            -> cs
+
+exportsCode :: [(Text, Text)] -> Bool
+exportsCode = maybe True (`elem` ["code", "both"]) . lookup "exports"

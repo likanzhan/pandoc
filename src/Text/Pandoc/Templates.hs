@@ -1,83 +1,116 @@
-{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE TypeSynonymInstances       #-}
-{-
-Copyright (C) 2009-2017 John MacFarlane <jgm@berkeley.edu>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Templates
-   Copyright   : Copyright (C) 2009-2017 John MacFarlane
+   Copyright   : Copyright (C) 2009-2020 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
    Stability   : alpha
    Portability : portable
 
-A simple templating system with variable substitution and conditionals.
-
+Utility functions for working with pandoc templates.
 -}
 
-module Text.Pandoc.Templates ( module Text.DocTemplates
-                             , renderTemplate'
+module Text.Pandoc.Templates ( Template
+                             , WithDefaultPartials(..)
+                             , WithPartials(..)
+                             , compileTemplate
+                             , renderTemplate
+                             , getTemplate
                              , getDefaultTemplate
+                             , compileDefaultTemplate
                              ) where
 
-import Control.Monad.Except (throwError)
-import Data.Aeson (ToJSON (..))
-import qualified Data.Text as T
-import System.FilePath ((<.>), (</>))
-import Text.DocTemplates (Template, TemplateTarget, applyTemplate,
-                          compileTemplate, renderTemplate, varListToJSON)
-import Text.Pandoc.Class (readDataFile, PandocMonad)
-import Text.Pandoc.Error
+import System.FilePath ((<.>), (</>), takeFileName)
+import Text.DocTemplates (Template, TemplateMonad(..), compileTemplate, renderTemplate)
+import Text.Pandoc.Class.CommonState (CommonState(..))
+import Text.Pandoc.Class.PandocMonad (PandocMonad, readDataFile, fetchItem,
+                                      getCommonState, modifyCommonState)
 import qualified Text.Pandoc.UTF8 as UTF8
+import Control.Monad.Except (catchError, throwError)
+import Data.Text (Text)
+import qualified Data.Text as T
+import Text.Pandoc.Error
+
+-- | Wrap a Monad in this if you want partials to
+-- be taken only from the default data files.
+newtype WithDefaultPartials m a = WithDefaultPartials { runWithDefaultPartials :: m a }
+ deriving (Functor, Applicative, Monad)
+
+-- | Wrap a Monad in this if you want partials to
+-- be looked for locally (or, when the main template
+-- is at a URL, via HTTP), falling back to default data files.
+newtype WithPartials m a = WithPartials { runWithPartials :: m a }
+ deriving (Functor, Applicative, Monad)
+
+instance PandocMonad m => TemplateMonad (WithDefaultPartials m) where
+  getPartial fp = WithDefaultPartials $
+    UTF8.toText <$> readDataFile ("templates" </> takeFileName fp)
+
+instance PandocMonad m => TemplateMonad (WithPartials m) where
+  getPartial fp = WithPartials $ getTemplate fp
+
+-- | Retrieve text for a template.
+getTemplate :: PandocMonad m => FilePath -> m Text
+getTemplate tp = UTF8.toText <$>
+  ((do surl <- stSourceURL <$> getCommonState
+       -- we don't want to look for templates remotely
+       -- unless the full URL is specified:
+       modifyCommonState $ \st -> st{
+         stSourceURL = Nothing }
+       (bs, _) <- fetchItem $ T.pack tp
+       modifyCommonState $ \st -> st{
+         stSourceURL = surl }
+       return bs)
+   `catchError`
+   (\e -> case e of
+             PandocResourceNotFound _ ->
+                -- see #5987 on reason for takeFileName
+                readDataFile ("templates" </> takeFileName tp)
+             _ -> throwError e))
 
 -- | Get default template for the specified writer.
 getDefaultTemplate :: PandocMonad m
-                   => String           -- ^ Name of writer
-                   -> m String
+                   => Text           -- ^ Name of writer
+                   -> m Text
 getDefaultTemplate writer = do
-  let format = takeWhile (`notElem` ("+-" :: String)) writer  -- strip off extensions
+  let format = T.takeWhile (`notElem` ("+-" :: String)) writer  -- strip off extensions
   case format of
        "native"  -> return ""
        "json"    -> return ""
        "docx"    -> return ""
        "fb2"     -> return ""
+       "pptx"    -> return ""
+       "ipynb"   -> return ""
        "odt"     -> getDefaultTemplate "opendocument"
        "html"    -> getDefaultTemplate "html5"
        "docbook" -> getDefaultTemplate "docbook5"
        "epub"    -> getDefaultTemplate "epub3"
        "beamer"  -> getDefaultTemplate "latex"
+       "jats"    -> getDefaultTemplate "jats_archiving"
        "markdown_strict"   -> getDefaultTemplate "markdown"
        "multimarkdown"     -> getDefaultTemplate "markdown"
        "markdown_github"   -> getDefaultTemplate "markdown"
        "markdown_mmd"      -> getDefaultTemplate "markdown"
        "markdown_phpextra" -> getDefaultTemplate "markdown"
        "gfm"               -> getDefaultTemplate "commonmark"
-       _        -> let fname = "templates" </> "default" <.> format
-                   in  UTF8.toString <$> readDataFile fname
+       "commonmark_x"      -> getDefaultTemplate "commonmark"
+       _        -> do
+         let fname = "templates" </> "default" <.> T.unpack format
+         UTF8.toText <$> readDataFile fname
 
--- | Like 'applyTemplate', but runs in PandocMonad and
--- raises an error if compilation fails.
-renderTemplate' :: (PandocMonad m, ToJSON a, TemplateTarget b)
-                => String -> a -> m b
-renderTemplate' template context = do
-  case applyTemplate (T.pack template) context of
-       Left e  -> throwError (PandocTemplateError e)
-       Right r -> return r
+-- | Get and compile default template for the specified writer.
+-- Raise an error on compilation failure.
+compileDefaultTemplate :: PandocMonad m
+                       => Text
+                       -> m (Template Text)
+compileDefaultTemplate writer = do
+  res <- getDefaultTemplate writer >>=
+          runWithDefaultPartials .
+           compileTemplate ("templates/default." <> T.unpack writer)
+  case res of
+    Left e   -> throwError $ PandocTemplateError (T.pack e)
+    Right t  -> return t

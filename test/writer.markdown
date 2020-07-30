@@ -239,6 +239,7 @@ Fancy list markers
 ------------------
 
 (2) begins with 2
+
 (3) and now 3
 
     with a continuation
@@ -398,17 +399,35 @@ bar
 
 Interpreted markdown in a table:
 
+```{=html}
 <table>
+```
+```{=html}
 <tr>
+```
+```{=html}
 <td>
+```
 This is *emphasized*
+```{=html}
 </td>
+```
+```{=html}
 <td>
+```
 And this is **strong**
+```{=html}
 </td>
+```
+```{=html}
 </tr>
+```
+```{=html}
 </table>
+```
+```{=html}
 <script type="text/javascript">document.write('This *should not* be interpreted as markdown');</script>
+```
 Here's a simple block:
 
 <div>
@@ -445,38 +464,64 @@ foo
 
 This should just be an HTML comment:
 
+```{=html}
 <!-- Comment -->
+```
 Multiline:
 
+```{=html}
 <!--
 Blah
 Blah
 -->
+```
+```{=html}
 <!--
     This is another comment.
 -->
+```
 Code block:
 
     <!-- Comment -->
 
 Just plain comment, with trailing spaces on the line:
 
+```{=html}
 <!-- foo -->
+```
 Code:
 
     <hr />
 
 Hr's:
 
+```{=html}
 <hr>
+```
+```{=html}
 <hr />
+```
+```{=html}
 <hr />
+```
+```{=html}
 <hr>
+```
+```{=html}
 <hr />
+```
+```{=html}
 <hr />
+```
+```{=html}
 <hr class="foo" id="bar" />
+```
+```{=html}
 <hr class="foo" id="bar" />
+```
+```{=html}
 <hr class="foo" id="bar">
+```
 
 ------------------------------------------------------------------------------
 
@@ -535,7 +580,7 @@ Ellipses...and...and....
 LaTeX
 =====
 
--   \cite[22-23]{smith.1899}
+-   `\cite[22-23]{smith.1899}`{=tex}
 -   $2+2=4$
 -   $x \in y$
 -   $\alpha \wedge \omega$
@@ -555,11 +600,13 @@ These shouldn't be math:
 
 Here's a LaTeX table:
 
+```{=tex}
 \begin{tabular}{|l|l|}\hline
 Animal & Number \\ \hline
 Dog    & 2      \\
 Cat    & 1      \\ \hline
 \end{tabular}
+```
 
 ------------------------------------------------------------------------------
 
@@ -636,7 +683,7 @@ Just a [URL](/url/).
 
 [URL and title](/url/ "title with single quotes")
 
-[with\_underscore](/url/with_underscore)
+[with_underscore](/url/with_underscore)
 
 [Email link](mailto:nobody@nowhere.net)
 

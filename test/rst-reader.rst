@@ -107,6 +107,30 @@ And:
    def my_function(x):
        return x + 1
 
+If we use the highlight directive, we can specify a default language
+for literate blocks.
+
+.. highlight:: haskell
+
+::
+
+  -- this code is in haskell
+  data Tree = Leaf | Node Tree Tree
+
+::
+
+  -- this code is in haskell too
+  data Nat = Zero | Succ Nat
+
+.. highlight:: javascript
+
+::
+
+  -- this code is in javascript
+  let f = (x, y) => x + y
+
+.. highlight::
+
 Lists
 =====
 
@@ -192,7 +216,7 @@ Multiple paragraphs:
 
 	Item 1. graf two. The quick brown fox jumped over the lazy dog's
 	back.
-	
+
 2.	Item 2.
 
 3.	Item 3.

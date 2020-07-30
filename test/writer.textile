@@ -212,7 +212,7 @@ h2(#tabs-and-spaces). Tabs and spaces
 h2(#fancy-list-markers). Fancy list markers
 
 <ol start="2" style="list-style-type: decimal;">
-<li>begins with 2</li>
+<li><p>begins with 2</p></li>
 <li><p>and now 3</p>
 <p>with a continuation</p>
 <ol start="4" style="list-style-type: lower-roman;">
@@ -523,13 +523,13 @@ Ellipses...and...and....
 h1(#latex). LaTeX
 
 * 
-* <span class="math">2+2=4</math>
-* <span class="math">x \in y</math>
-* <span class="math">\alpha \wedge \omega</math>
-* <span class="math">223</math>
-* <span class="math">p</math>&#45;Tree
-* Here's some display math: <span class="math">\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}</math>
-* Here's one that has a line break in it: <span class="math">\alpha + \omega \times x^2</math>.
+* <span class="math">2+2=4</span>
+* <span class="math">x \in y</span>
+* <span class="math">\alpha \wedge \omega</span>
+* <span class="math">223</span>
+* <span class="math">p</span>&#45;Tree
+* Here's some display math: <span class="math">\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}</span>
+* Here's one that has a line break in it: <span class="math">\alpha + \omega \times x^2</span>.
 
 These shouldn't be math:
 
@@ -660,7 +660,7 @@ With an ampersand: "$":http://example.com/?foo=1&bar=2
 * "$":http://example.com/
 * It should.
 
-An e&#45;mail address: "nobody&#64;nowhere.net":mailto:nobody@nowhere.net
+An e&#45;mail address: "(email)nobody&#64;nowhere.net":mailto:nobody@nowhere.net
 
 bq. Blockquoted: "$":http://example.com/
 

@@ -1,25 +1,9 @@
-{-
-Copyright (C) 2008-2017 John MacFarlane <jgm@berkeley.edu>
-              2017 Alex Ivkin
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns      #-}
 {- |
    Module      : Text.Pandoc.Writers.ZimWiki
-   Copyright   : Copyright (C) 2008-2017 John MacFarlane, 2017 Alex Ivkin
+   Copyright   : © 2008-2020 John MacFarlane,
+                   2017-2019 Alex Ivkin
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Alex Ivkin <alex@ivkin.net>
@@ -35,28 +19,31 @@ module Text.Pandoc.Writers.ZimWiki ( writeZimWiki ) where
 import Control.Monad (zipWithM)
 import Control.Monad.State.Strict (StateT, evalStateT, gets, modify)
 import Data.Default (Default (..))
-import Data.List (intercalate, isInfixOf, isPrefixOf, transpose)
+import Data.List (transpose)
 import qualified Data.Map as Map
-import Data.Text (breakOnAll, pack, Text)
-import Text.Pandoc.Class (PandocMonad, report)
-import Text.Pandoc.Logging
+import Text.DocLayout (render, literal)
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
+import Text.Pandoc.Class.PandocMonad (PandocMonad, report)
 import Text.Pandoc.Definition
 import Text.Pandoc.ImageSize
-import Text.Pandoc.Options (WrapOption (..), WriterOptions (writerTableOfContents, writerTemplate, writerWrapText))
-import Text.Pandoc.Shared (isURI, escapeURI, linesToPara, removeFormatting,
-                           substitute, trimr)
-import Text.Pandoc.Templates (renderTemplate')
-import Text.Pandoc.Writers.Shared (defField, metaToJSON)
+import Text.Pandoc.Logging
+import Text.Pandoc.Options (WrapOption (..),
+           WriterOptions (writerTableOfContents, writerTemplate,
+                          writerWrapText))
+import Text.Pandoc.Shared (escapeURI, isURI, linesToPara, removeFormatting, trimr)
+import Text.Pandoc.Templates (renderTemplate)
+import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable)
 
 data WriterState = WriterState {
-    stItemNum :: Int,
-    stIndent  :: String,         -- Indent after the marker at the beginning of list items
+    stIndent  :: Text,           -- Indent after the marker at the beginning of list items
     stInTable :: Bool,           -- Inside a table
     stInLink  :: Bool            -- Inside a link description
   }
 
 instance Default WriterState where
-  def = WriterState { stItemNum = 1, stIndent = "", stInTable = False, stInLink = False }
+  def = WriterState { stIndent = "", stInTable = False, stInLink = False }
 
 type ZW = StateT WriterState
 
@@ -67,63 +54,60 @@ writeZimWiki opts document = evalStateT (pandocToZimWiki opts document) def
 -- | Return ZimWiki representation of document.
 pandocToZimWiki :: PandocMonad m => WriterOptions -> Pandoc -> ZW m Text
 pandocToZimWiki opts (Pandoc meta blocks) = do
-  metadata <- metaToJSON opts
-              (fmap trimr . blockListToZimWiki opts)
-              (inlineListToZimWiki opts)
+  metadata <- metaToContext opts
+              (fmap (literal . trimr) . blockListToZimWiki opts)
+              (fmap (literal . trimr) . inlineListToZimWiki opts)
               meta
-  body <- pack <$> blockListToZimWiki opts blocks
+  main <- blockListToZimWiki opts blocks
   --let header = "Content-Type: text/x-zim-wiki\nWiki-Format: zim 0.4\n"
-  let main = body
   let context = defField "body" main
-                $ defField "toc" (writerTableOfContents opts)
-                $ metadata
-  case writerTemplate opts of
-       Just tpl -> renderTemplate' tpl context
-       Nothing  -> return main
+                $ defField "toc" (writerTableOfContents opts) metadata
+  return $
+    case writerTemplate opts of
+       Just tpl -> render Nothing $ renderTemplate tpl context
+       Nothing  -> main
 
 -- | Escape special characters for ZimWiki.
-escapeString :: String -> String
-escapeString = substitute "__" "''__''" .
-               substitute "**" "''**''" .
-               substitute "~~" "''~~''" .
-               substitute "//" "''//''"
+escapeText :: Text -> Text
+escapeText = T.replace "__" "''__''" .
+               T.replace "**" "''**''" .
+               T.replace "~~" "''~~''" .
+               T.replace "//" "''//''"
 
 -- | Convert Pandoc block element to ZimWiki.
-blockToZimWiki :: PandocMonad m => WriterOptions -> Block -> ZW m String
+blockToZimWiki :: PandocMonad m => WriterOptions -> Block -> ZW m Text
 
 blockToZimWiki _ Null = return ""
 
 blockToZimWiki opts (Div _attrs bs) = do
   contents <- blockListToZimWiki opts bs
-  return $ contents ++ "\n"
+  return $ contents <> "\n"
 
 blockToZimWiki opts (Plain inlines) = inlineListToZimWiki opts inlines
 
 -- title beginning with fig: indicates that the image is a figure
 -- ZimWiki doesn't support captions - so combine together alt and caption into alt
-blockToZimWiki opts (Para [Image attr txt (src,'f':'i':'g':':':tit)]) = do
+blockToZimWiki opts (Para [Image attr txt (src,T.stripPrefix "fig:" -> Just tit)]) = do
   capt <- if null txt
              then return ""
-             else (" " ++) `fmap` inlineListToZimWiki opts txt
+             else (" " <>) `fmap` inlineListToZimWiki opts txt
   let opt = if null txt
                then ""
-               else "|" ++ if null tit then capt else tit ++ capt
-      -- Relative links fail isURI and receive a colon
-      prefix = if isURI src then "" else ":"
-  return $ "{{" ++ prefix ++ src ++ imageDims opts attr ++ opt ++ "}}\n"
+               else "|" <> if T.null tit then capt else tit <> capt
+  return $ "{{" <> src <> imageDims opts attr <> opt <> "}}\n"
 
 blockToZimWiki opts (Para inlines) = do
   indent <- gets stIndent
   -- useTags <- gets stUseTags
   contents <- inlineListToZimWiki opts inlines
-  return $ contents ++ if null indent then "\n" else ""
+  return $ contents <> if T.null indent then "\n" else ""
 
-blockToZimWiki opts (LineBlock lns) = do
+blockToZimWiki opts (LineBlock lns) =
   blockToZimWiki opts $ linesToPara lns
 
 blockToZimWiki opts b@(RawBlock f str)
   | f == Format "zimwiki"  = return str
-  | f == Format "html"     = do cont <- indentFromHTML opts str; return cont
+  | f == Format "html"     = indentFromHTML opts str
   | otherwise              = do
       report $ BlockNotRendered b
       return ""
@@ -132,144 +116,137 @@ blockToZimWiki _ HorizontalRule = return "\n----\n"
 
 blockToZimWiki opts (Header level _ inlines) = do
   contents <- inlineListToZimWiki opts $ removeFormatting inlines   -- emphasis, links etc. not allowed in headers
-  let eqs = replicate ( 7 - level ) '='
-  return $ eqs ++ " " ++ contents ++ " " ++ eqs ++ "\n"
+  let eqs = T.replicate ( 7 - level ) "="
+  return $ eqs <> " " <> contents <> " " <> eqs <> "\n"
 
 blockToZimWiki _ (CodeBlock (_,classes,_) str) = do
   -- Remap languages into the gtksourceview2 convention that ZimWiki source code plugin is using
   let langal = [("javascript", "js"), ("bash", "sh"), ("winbatch", "dosbatch")]
   let langmap = Map.fromList langal
   return $ case classes of
-                []      -> "'''\n" ++ cleanupCode str ++ "\n'''\n"   -- turn no lang block into a quote block
-                (x:_)   -> "{{{code: lang=\"" ++
-                        (case Map.lookup x langmap of
-                                Nothing -> x
-                                Just y  -> y) ++ "\" linenumbers=\"True\"\n" ++ str ++ "\n}}}\n"  -- for zim's code plugin, go verbatim on the lang spec
+                []      -> "'''\n" <> cleanupCode str <> "\n'''\n"   -- turn no lang block into a quote block
+                (x:_)   -> "{{{code: lang=\"" <>
+                        fromMaybe x (Map.lookup x langmap) <> "\" linenumbers=\"True\"\n" <> str <> "\n}}}\n"  -- for zim's code plugin, go verbatim on the lang spec
 
 blockToZimWiki opts (BlockQuote blocks) = do
   contents <- blockListToZimWiki opts blocks
-  return $ unlines $ map ("> " ++) $ lines contents
+  return $ T.unlines $ map ("> " <>) $ T.lines contents
 
-blockToZimWiki opts (Table capt aligns _ headers rows) = do
+blockToZimWiki opts (Table _ blkCapt specs thead tbody tfoot) = do
+  let (capt, aligns, _, headers, rows) = toLegacyTable blkCapt specs thead tbody tfoot
   captionDoc <- if null capt
                    then return ""
                    else do
                       c <- inlineListToZimWiki opts capt
-                      return $ "" ++ c ++ "\n"
+                      return $ "" <> c <> "\n"
   headers' <- if all null headers
-                 then zipWithM (tableItemToZimWiki opts) aligns (rows !! 0)
-                 else mapM (inlineListToZimWiki opts) (map removeFormatting headers)  -- emphasis, links etc. are not allowed in table headers
+                 then zipWithM (tableItemToZimWiki opts) aligns (head rows)
+                 else mapM (inlineListToZimWiki opts . removeFormatting)headers  -- emphasis, links etc. are not allowed in table headers
   rows' <- mapM (zipWithM (tableItemToZimWiki opts) aligns) rows
-  let widths = map (maximum . map length) $ transpose (headers':rows')
+  let widths = map (maximum . map T.length) $ transpose (headers':rows')
   let padTo (width, al) s =
-          case (width - length s) of
+          case width - T.length s of
                x | x > 0 ->
                  if al == AlignLeft || al == AlignDefault
-                    then s ++ replicate x ' '
+                    then s <> T.replicate x " "
                     else if al == AlignRight
-                            then replicate x ' ' ++ s
-                            else replicate (x `div` 2) ' ' ++
-                                 s ++ replicate (x - x `div` 2) ' '
+                            then T.replicate x " " <> s
+                            else T.replicate (x `div` 2) " " <>
+                                 s <> T.replicate (x - x `div` 2) " "
                  | otherwise -> s
-  let borderCell (width, al) _ =
-                 if al == AlignLeft
-                    then ":"++ replicate (width-1) '-'
-                        else if al == AlignDefault
-                        then replicate width '-'
-                        else if al == AlignRight
-                            then replicate (width-1) '-' ++ ":"
-                            else ":" ++ replicate (width-2) '-' ++ ":"
-  let underheader  = "|" ++ intercalate "|" (zipWith borderCell (zip widths aligns) headers') ++ "|"
-  let renderRow cells = "|" ++ intercalate "|" (zipWith padTo (zip widths aligns) cells) ++ "|"
-  return $ captionDoc ++
-           (if null headers' then "" else renderRow headers' ++ "\n") ++ underheader ++ "\n" ++
-           unlines (map renderRow rows')
+  let borderCell (width, al) _
+        | al == AlignLeft = ":"<> T.replicate (width-1) "-"
+        | al == AlignDefault = T.replicate width "-"
+        | al == AlignRight = T.replicate (width-1) "-" <> ":"
+        | otherwise = ":" <> T.replicate (width-2) "-" <> ":"
+  let underheader  = "|" <> T.intercalate "|" (zipWith borderCell (zip widths aligns) headers') <> "|"
+  let renderRow cells = "|" <> T.intercalate "|" (zipWith padTo (zip widths aligns) cells) <> "|"
+  return $ captionDoc <>
+           (if null headers' then "" else renderRow headers' <> "\n") <> underheader <> "\n" <>
+           T.unlines (map renderRow rows')
 
 blockToZimWiki opts (BulletList items) = do
+  contents <- mapM (listItemToZimWiki opts) items
   indent <- gets stIndent
-  modify $ \s -> s { stIndent = stIndent s ++ "\t" }
-  contents <- (mapM (listItemToZimWiki opts) items)
-  modify $ \s -> s{ stIndent = indent } -- drop 1 (stIndent s) }
-  return $ vcat contents ++ if null indent then "\n" else ""
+  return $ vcat contents <> if T.null indent then "\n" else ""
 
 blockToZimWiki opts (OrderedList _ items) = do
+  contents <- zipWithM (orderedListItemToZimWiki opts) [1..] items
   indent <- gets stIndent
-  modify $ \s -> s { stIndent = stIndent s ++ "\t", stItemNum = 1 }
-  contents <- (mapM (orderedListItemToZimWiki opts) items)
-  modify $ \s -> s{ stIndent = indent } -- drop 1 (stIndent s) }
-  return $ vcat contents ++ if null indent then "\n" else ""
+  return $ vcat contents <> if T.null indent then "\n" else ""
 
 blockToZimWiki opts (DefinitionList items) = do
-  contents <- (mapM (definitionListItemToZimWiki opts) items)
+  contents <- mapM (definitionListItemToZimWiki opts) items
   return $ vcat contents
 
 definitionListItemToZimWiki :: PandocMonad m
                             => WriterOptions
                             -> ([Inline],[[Block]])
-                            -> ZW m String
+                            -> ZW m Text
 definitionListItemToZimWiki opts (label, items) = do
   labelText <- inlineListToZimWiki opts label
   contents <- mapM (blockListToZimWiki opts) items
   indent <- gets stIndent
-  return $ indent ++ "* **" ++ labelText ++ "** " ++ concat contents
+  return $ indent <> "* **" <> labelText <> "** " <> T.concat contents
 
 -- Auxiliary functions for lists:
-indentFromHTML :: PandocMonad m => WriterOptions -> String -> ZW m String
+indentFromHTML :: PandocMonad m => WriterOptions -> Text -> ZW m Text
 indentFromHTML _ str = do
    indent <- gets stIndent
-   itemnum <- gets stItemNum
-   if isInfixOf "<li>" str then return $ indent ++ show itemnum ++ "."
-        else if isInfixOf "</li>" str then return "\n"
-                else if isInfixOf "<li value=" str then do
-                        -- poor man's cut
-                        let val = drop 10 $ reverse $ drop 1 $ reverse str
-                        --let val = take ((length valls) - 2) valls
-                        modify $ \s -> s { stItemNum = read val }
-                        return ""
-                        else if isInfixOf "<ol>" str then do
-                                let olcount=countSubStrs "<ol>" str
-                                modify $ \s -> s { stIndent = stIndent s ++ replicate olcount '\t', stItemNum = 1 }
-                                return ""
-                                else if isInfixOf "</ol>" str then do
-                                        let olcount=countSubStrs "/<ol>" str
-                                        modify $ \s -> s{ stIndent = drop olcount (stIndent s) }
-                                        return ""
-                                        else
-                                                return ""
+   if "<li>" `T.isInfixOf` str
+      then return indent
+      else if "</li>" `T.isInfixOf` str
+        then return "\n"
+        else if "<li value=" `T.isInfixOf` str
+          then return ""
+          else if "<ol>" `T.isInfixOf` str
+            then do
+              let olcount=countSubStrs "<ol>" str
+              modify $ \s -> s { stIndent = stIndent s <>
+                                 T.replicate olcount "\t" }
+              return ""
+            else if "</ol>" `T.isInfixOf` str
+              then do
+                let olcount=countSubStrs "/<ol>" str
+                modify $ \s -> s{ stIndent = T.drop olcount (stIndent s) }
+                return ""
+              else return ""
 
-countSubStrs :: String -> String -> Int
-countSubStrs sub str = length $ breakOnAll (pack sub) (pack str)
+countSubStrs :: Text -> Text -> Int
+countSubStrs sub str = length $ T.breakOnAll sub str
 
-cleanupCode :: String -> String
-cleanupCode = substitute "<nowiki>" "" . substitute "</nowiki>" ""
+cleanupCode :: Text -> Text
+cleanupCode = T.replace "<nowiki>" "" . T.replace "</nowiki>" ""
 
-vcat :: [String] -> String
-vcat = intercalate "\n"
+vcat :: [Text] -> Text
+vcat = T.intercalate "\n"
 
 -- | Convert bullet list item (list of blocks) to ZimWiki.
-listItemToZimWiki :: PandocMonad m => WriterOptions -> [Block] -> ZW m String
+listItemToZimWiki :: PandocMonad m => WriterOptions -> [Block] -> ZW m Text
 listItemToZimWiki opts items = do
-  contents <- blockListToZimWiki opts items
   indent <- gets stIndent
-  return $ indent ++ "* " ++ contents
+  modify $ \s -> s { stIndent = indent <> "\t" }
+  contents <- blockListToZimWiki opts items
+  modify $ \s -> s{ stIndent = indent }
+  return $ indent <> "* " <> contents
 
 -- | Convert ordered list item (list of blocks) to ZimWiki.
 orderedListItemToZimWiki :: PandocMonad m
-                         => WriterOptions -> [Block] -> ZW m String
-orderedListItemToZimWiki opts items = do
-  contents <- blockListToZimWiki opts items
+                         => WriterOptions -> Int -> [Block] -> ZW m Text
+orderedListItemToZimWiki opts itemnum items = do
   indent <- gets stIndent
-  itemnum <- gets stItemNum
-  --modify $ \s -> s { stItemNum = itemnum + 1 } -- this is not strictly necessary for zim as zim does its own renumbering
-  return $ indent ++ show itemnum ++ ". " ++ contents
+  modify $ \s -> s { stIndent = indent <> "\t" }
+  contents <- blockListToZimWiki opts items
+  modify $ \s -> s{ stIndent = indent }
+  return $ indent <> T.pack (show itemnum) <> ". " <> contents
 
 -- Auxiliary functions for tables:
 tableItemToZimWiki :: PandocMonad m
-                   => WriterOptions -> Alignment -> [Block] -> ZW m String
+                   => WriterOptions -> Alignment -> [Block] -> ZW m Text
 tableItemToZimWiki opts align' item = do
   let mkcell x = (if align' == AlignRight || align' == AlignCenter
                      then "  "
-                     else "") ++ x ++
+                     else "") <> x <>
                  (if align' == AlignLeft || align' == AlignCenter
                      then "  "
                      else "")
@@ -280,45 +257,49 @@ tableItemToZimWiki opts align' item = do
 
 -- | Convert list of Pandoc block elements to ZimWiki.
 blockListToZimWiki :: PandocMonad m
-                   => WriterOptions -> [Block] -> ZW m String
+                   => WriterOptions -> [Block] -> ZW m Text
 blockListToZimWiki opts blocks = vcat <$> mapM (blockToZimWiki opts) blocks
 
 -- | Convert list of Pandoc inline elements to ZimWiki.
 inlineListToZimWiki :: PandocMonad m
-                    => WriterOptions -> [Inline] -> ZW m String
-inlineListToZimWiki opts lst =  concat <$> (mapM (inlineToZimWiki opts) lst)
+                    => WriterOptions -> [Inline] -> ZW m Text
+inlineListToZimWiki opts lst = T.concat <$> mapM (inlineToZimWiki opts) lst
 
 -- | Convert Pandoc inline element to ZimWiki.
 inlineToZimWiki :: PandocMonad m
-                => WriterOptions -> Inline -> ZW m String
+                => WriterOptions -> Inline -> ZW m Text
 
 inlineToZimWiki opts (Emph lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "//" ++ contents ++ "//"
+  return $ "//" <> contents <> "//"
+
+inlineToZimWiki opts (Underline lst) = do
+  contents <- inlineListToZimWiki opts lst
+  return $ "__" <> contents <> "__"
 
 inlineToZimWiki opts (Strong lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "**" ++ contents ++ "**"
+  return $ "**" <> contents <> "**"
 
 inlineToZimWiki opts (Strikeout lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "~~" ++ contents ++ "~~"
+  return $ "~~" <> contents <> "~~"
 
 inlineToZimWiki opts (Superscript lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "^{" ++ contents ++ "}"
+  return $ "^{" <> contents <> "}"
 
 inlineToZimWiki opts (Subscript lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "_{" ++ contents ++ "}"
+  return $ "_{" <> contents <> "}"
 
 inlineToZimWiki opts (Quoted SingleQuote lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "\8216" ++ contents ++ "\8217"
+  return $ "\8216" <> contents <> "\8217"
 
 inlineToZimWiki opts (Quoted DoubleQuote lst) = do
   contents <- inlineListToZimWiki opts lst
-  return $ "\8220" ++ contents ++ "\8221"
+  return $ "\8220" <> contents <> "\8221"
 
 inlineToZimWiki opts (Span _attrs ils) = inlineListToZimWiki opts ils
 
@@ -326,28 +307,28 @@ inlineToZimWiki opts (SmallCaps lst) = inlineListToZimWiki opts lst
 
 inlineToZimWiki opts (Cite _  lst) = inlineListToZimWiki opts lst
 
-inlineToZimWiki _ (Code _ str) = return $ "''" ++ str ++ "''"
+inlineToZimWiki _ (Code _ str) = return $ "''" <> str <> "''"
 
 inlineToZimWiki _ (Str str) = do
   inTable <- gets stInTable
   inLink  <- gets stInLink
   if inTable
-      then return $ substitute "|" "\\|" . escapeString $ str
+      then return $ T.replace "|" "\\|" . escapeText $ str
       else
           if inLink
-          then return $ str
-          else return $ escapeString str
+          then return str
+          else return $ escapeText str
 
-inlineToZimWiki _ (Math mathType str) = return $ delim ++ str ++ delim   -- note:  str should NOT be escaped
+inlineToZimWiki _ (Math mathType str) = return $ delim <> str <> delim   -- note:  str should NOT be escaped
   where delim = case mathType of
                      DisplayMath -> "$$"
                      InlineMath  -> "$"
 
--- | f == Format "html"     = return $ "<html>" ++ str ++ "</html>"
+-- | f == Format "html"     = return $ "<html>" <> str <> "</html>"
 inlineToZimWiki opts il@(RawInline f str)
   | f == Format "zimwiki" = return str
-  | f == Format "html"     = do cont <- indentFromHTML opts str; return cont
-  | otherwise              = do
+  | f == Format "html"    = indentFromHTML opts str
+  | otherwise             = do
       report $ InlineNotRendered il
       return ""
 
@@ -372,40 +353,39 @@ inlineToZimWiki opts (Link _ txt (src, _)) = do
   modify $ \s -> s { stInLink = False }
   let label'= if inTable
             then "" -- no label is allowed in a table
-            else "|"++label
+            else "|"<>label
   case txt of
-     [Str s] | "mailto:" `isPrefixOf` src -> return $ "<" ++ s ++ ">"
+     [Str s] | "mailto:" `T.isPrefixOf` src -> return $ "<" <> s <> ">"
              | escapeURI s == src -> return src
      _  -> if isURI src
-              then return $ "[[" ++ src  ++ label' ++ "]]"
-              else return $ "[[" ++ src' ++ label' ++ "]]"
-                     where src' = case src of
-                                     '/':xs -> xs  -- with leading / it's a
-                                     _      -> src -- link to a help page
+              then return $ "[[" <> src  <> label' <> "]]"
+              else return $ "[[" <> src' <> label' <> "]]"
+  where
+    -- with leading / it's a link to a help page
+    src' = fromMaybe src $ T.stripPrefix "/" src
+
 inlineToZimWiki opts (Image attr alt (source, tit)) = do
   alt' <- inlineListToZimWiki opts alt
   inTable <- gets stInTable
   let txt = case (tit, alt, inTable) of
               ("",[], _)      -> ""
-              ("", _, False ) -> "|" ++ alt'
-              (_ , _, False ) -> "|" ++ tit
+              ("", _, False ) -> "|" <> alt'
+              (_ , _, False ) -> "|" <> tit
               (_ , _, True )  -> ""
-      -- Relative links fail isURI and receive a colon
-      prefix = if isURI source then "" else ":"
-  return $ "{{" ++ prefix ++ source ++ imageDims opts attr ++ txt ++ "}}"
+  return $ "{{" <> source <> imageDims opts attr <> txt <> "}}"
 
 inlineToZimWiki opts (Note contents) = do
   -- no concept of notes in zim wiki, use a text block
   contents' <- blockListToZimWiki opts contents
-  return $ " **{Note:** " ++ trimr contents' ++ "**}**"
+  return $ " **{Note:** " <> trimr contents' <> "**}**"
 
-imageDims :: WriterOptions -> Attr -> String
+imageDims :: WriterOptions -> Attr -> Text
 imageDims opts attr = go (toPx $ dimension Width attr) (toPx $ dimension Height attr)
   where
     toPx = fmap (showInPixel opts) . checkPct
     checkPct (Just (Percent _)) = Nothing
     checkPct maybeDim           = maybeDim
-    go (Just w) Nothing  = "?" ++ w
-    go (Just w) (Just h) = "?" ++ w ++ "x" ++ h
-    go Nothing  (Just h) = "?0x" ++ h
+    go (Just w) Nothing  = "?" <> w
+    go (Just w) (Just h) = "?" <> w <> "x" <> h
+    go Nothing  (Just h) = "?0x" <> h
     go Nothing  Nothing  = ""

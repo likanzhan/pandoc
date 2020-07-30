@@ -1,6 +1,8 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Tests.Writers.TEI (tests) where
 
+import Prelude
 import Test.Tasty
 import Tests.Helpers
 import Text.Pandoc
@@ -31,7 +33,7 @@ tests = [ testGroup "block elements"
           ]
         , testGroup "inlines"
           [
-            "Emphasis"      =:  emph ("emphasized")
+            "Emphasis"      =:  emph "emphasized"
                             =?> "<p><hi rendition=\"simple:italic\">emphasized</hi></p>"
            ,"SingleQuoted"  =:  singleQuoted (text "quoted material")
                             =?> "<p><quote>quoted material</quote></p>"

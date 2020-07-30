@@ -17,19 +17,8 @@ $if(keywords)$
 $endif$
   <title>$if(title-prefix)$$title-prefix$ – $endif$$pagetitle$</title>
   <style type="text/css">
-      code{white-space: pre-wrap;}
-      .smallcaps{font-variant: small-caps;}
-      .line-block{white-space: pre-line;}
-      .column{display: inline-block;}
-$if(quotes)$
-      q { quotes: "“" "”" "‘" "’"; }
-$endif$
+    $styles.html()$
   </style>
-$if(highlighting-css)$
-  <style type="text/css">
-$highlighting-css$
-  </style>
-$endif$
   <link rel="stylesheet" type="text/css" media="screen, projection, print"
     href="$slideous-url$/slideous.css" />
 $for(css)$

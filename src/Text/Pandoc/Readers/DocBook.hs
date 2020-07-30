@@ -1,23 +1,34 @@
+{-# LANGUAGE OverloadedStrings #-}
+{- |
+   Module      : Text.Pandoc.Readers.DocBook
+   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   License     : GNU GPL, version 2 or above
+
+   Maintainer  : John MacFarlane <jgm@berkeley.edu>
+   Stability   : alpha
+   Portability : portable
+
+Conversion of DocBook XML to 'Pandoc' document.
+-}
 module Text.Pandoc.Readers.DocBook ( readDocBook ) where
-import Data.Char (toUpper)
-import Text.Pandoc.Shared (safeRead, crFilter)
-import Text.Pandoc.Options
-import Text.Pandoc.Definition
-import Text.Pandoc.Builder
-import Text.XML.Light
-import Text.HTML.TagSoup.Entity (lookupEntity)
-import Data.Either (rights)
-import Data.Generics
-import Data.Char (isSpace)
 import Control.Monad.State.Strict
+import Data.Char (isSpace, toUpper)
+import Data.Default
+import Data.Either (rights)
+import Data.Foldable (asum)
+import Data.Generics
 import Data.List (intersperse)
 import Data.Maybe (fromMaybe)
-import Text.TeXMath (readMathML, writeTeX)
-import Data.Default
-import Data.Foldable (asum)
-import Text.Pandoc.Class (PandocMonad)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Text.HTML.TagSoup.Entity (lookupEntity)
+import Text.Pandoc.Builder
+import Text.Pandoc.Class.PandocMonad (PandocMonad, report)
+import Text.Pandoc.Options
+import Text.Pandoc.Logging (LogMessage(..))
+import Text.Pandoc.Shared (crFilter, safeRead)
+import Text.TeXMath (readMathML, writeTeX)
+import Text.XML.Light
 
 {-
 
@@ -51,7 +62,7 @@ List of all DocBook tags, with [x] indicating implemented,
 [x] author - The name of an individual author
 [ ] authorblurb - A short description or note about an author
 [x] authorgroup - Wrapper for author information when a document has
-    multiple authors or collabarators
+    multiple authors or collaborators
 [x] authorinitials - The initials or other short identifier for an author
 [o] beginpage - The location of a page break in a print version of the document
 [ ] bibliocoverage - The spatial or temporal coverage of a document
@@ -128,7 +139,7 @@ List of all DocBook tags, with [x] indicating implemented,
 [x] emphasis - Emphasized text
 [x] entry - A cell in a table
 [ ] entrytbl - A subtable appearing in place of an Entry in a table
-[ ] envar - A software environment variable
+[x] envar - A software environment variable
 [x] epigraph - A short inscription at the beginning of a document or component
     note:  also handle embedded attribution tag
 [x] equation - A displayed mathematical equation
@@ -236,7 +247,7 @@ List of all DocBook tags, with [x] indicating implemented,
 [ ] manvolnum - A reference volume number
 [x] markup - A string of formatting markup in text that is to be
     represented literally
-[ ] mathphrase - A mathematical phrase, an expression that can be represented
+[x] mathphrase - A mathematical phrase, an expression that can be represented
     with ordinary text and a small amount of markup
 [ ] medialabel - A name that identifies the physical medium on which some
     information resides
@@ -294,7 +305,7 @@ List of all DocBook tags, with [x] indicating implemented,
 [ ] personblurb - A short description or note about a person
 [ ] personname - The personal name of an individual
 [ ] phone - A telephone number
-[ ] phrase - A span of text
+[x] phrase - A span of text
 [ ] pob - A post office box in an address
 [ ] postcode - A postal code in an address
 [x] preface - Introductory matter preceding the first chapter of a book
@@ -303,7 +314,7 @@ List of all DocBook tags, with [x] indicating implemented,
     sorted
 [ ] primaryie - A primary term in an index entry, not in the text
 [ ] printhistory - The printing history of a document
-[ ] procedure - A list of operations to be performed in a well-defined sequence
+[x] procedure - A list of operations to be performed in a well-defined sequence
 [ ] production - A production in a set of EBNF productions
 [ ] productionrecap - A cross-reference to an EBNF production
 [ ] productionset - A set of EBNF productions
@@ -349,10 +360,10 @@ List of all DocBook tags, with [x] indicating implemented,
 [x] refsectioninfo - Meta-information for a refsection
 [ ] refsynopsisdiv - A syntactic synopsis of the subject of the reference page
 [ ] refsynopsisdivinfo - Meta-information for a RefSynopsisDiv
-[x] releaseinfo - Information about a particular release of a document
+[ ] releaseinfo - Information about a particular release of a document
 [ ] remark - A remark (or comment) intended for presentation in a draft
     manuscript
-[ ] replaceable - Content that may or must be replaced by the user
+[x] replaceable - Content that may or must be replaced by the user
 [ ] returnvalue - The value returned by a function
 [ ] revdescription - A extended description of a revision to a document
 [ ] revhistory - A history of the revisions to a document
@@ -408,10 +419,10 @@ List of all DocBook tags, with [x] indicating implemented,
     elements
 [x] simplelist - An undecorated list of single words or short phrases
 [ ] simplemsgentry - A wrapper for a simpler entry in a message set
-[ ] simplesect - A section of a document with no subdivisions
+[x] simplesect - A section of a document with no subdivisions
 [ ] spanspec - Formatting information for a spanned column in a table
 [ ] state - A state or province in an address
-[ ] step - A unit of action in a procedure
+[x] step - A unit of action in a procedure
 [ ] stepalternatives - Alternative steps in a procedure
 [ ] street - A street address in an address
 [ ] structfield - A field in a structure (in the programming language sense)
@@ -422,7 +433,7 @@ List of all DocBook tags, with [x] indicating implemented,
 [ ] subjectterm - A term in a group of terms describing the subject matter of
     a document
 [x] subscript - A subscript (as in H2O, the molecular formula for water)
-[ ] substeps - A wrapper for steps that occur within steps in a procedure
+[x] substeps - A wrapper for steps that occur within steps in a procedure
 [x] subtitle - The subtitle of a document
 [x] superscript - A superscript (as in x2, the mathematical notation for x
     multiplied by itself)
@@ -434,7 +445,7 @@ List of all DocBook tags, with [x] indicating implemented,
 [ ] synopfragmentref - A reference to a fragment of a command synopsis
 [ ] synopsis - A general-purpose element for representing the syntax of
     commands or functions
-[ ] systemitem - A system-related item or term
+[x] systemitem - A system-related item or term
 [ ] table - A formal table in a document
 [ ] task - A task to be completed
 [ ] taskprerequisites - The prerequisites for a task
@@ -508,9 +519,9 @@ type DB m = StateT DBState m
 data DBState = DBState{ dbSectionLevel :: Int
                       , dbQuoteType    :: QuoteType
                       , dbMeta         :: Meta
-                      , dbAcceptsMeta  :: Bool
                       , dbBook         :: Bool
                       , dbFigureTitle  :: Inlines
+                      , dbFigureId     :: Text
                       , dbContent      :: [Content]
                       } deriving Show
 
@@ -518,37 +529,40 @@ instance Default DBState where
   def = DBState{ dbSectionLevel = 0
                , dbQuoteType = DoubleQuote
                , dbMeta = mempty
-               , dbAcceptsMeta = False
                , dbBook = False
                , dbFigureTitle = mempty
+               , dbFigureId = mempty
                , dbContent = [] }
 
 
 readDocBook :: PandocMonad m => ReaderOptions -> Text -> m Pandoc
 readDocBook _ inp = do
-  let tree = normalizeTree . parseXML . handleInstructions
-               $ T.unpack $ crFilter inp
-  (bs, st') <- flip runStateT (def{ dbContent = tree }) $ mapM parseBlock $ tree
+  let tree = normalizeTree . parseXML . handleInstructions $ crFilter inp
+  (bs, st') <- flip runStateT (def{ dbContent = tree }) $ mapM parseBlock tree
   return $ Pandoc (dbMeta st') (toList . mconcat $ bs)
 
 -- We treat <?asciidoc-br?> specially (issue #1236), converting it
 -- to <br/>, since xml-light doesn't parse the instruction correctly.
 -- Other xml instructions are simply removed from the input stream.
-handleInstructions :: String -> String
-handleInstructions ('<':'?':'a':'s':'c':'i':'i':'d':'o':'c':'-':'b':'r':'?':'>':xs) = '<':'b':'r':'/':'>': handleInstructions xs
-handleInstructions xs = case break (=='<') xs of
+handleInstructions :: Text -> Text
+handleInstructions = T.pack . handleInstructions' . T.unpack
+
+handleInstructions' :: String -> String
+handleInstructions' ('<':'?':'a':'s':'c':'i':'i':'d':'o':'c':'-':'b':'r':'?':'>':xs) = '<':'b':'r':'/':'>': handleInstructions' xs
+handleInstructions' xs = case break (=='<') xs of
                              (ys, [])     -> ys
-                             ([], '<':zs) -> '<' : handleInstructions zs
-                             (ys, zs) -> ys ++ handleInstructions zs
+                             ([], '<':zs) -> '<' : handleInstructions' zs
+                             (ys, zs)     -> ys ++ handleInstructions' zs
 
 getFigure :: PandocMonad m => Element -> DB m Blocks
 getFigure e = do
   tit <- case filterChild (named "title") e of
-              Just t -> getInlines t
+              Just t  -> getInlines t
               Nothing -> return mempty
-  modify $ \st -> st{ dbFigureTitle = tit }
+  let ident = attrValue "id" e
+  modify $ \st -> st{ dbFigureTitle = tit, dbFigureId = ident }
   res <- getBlocks e
-  modify $ \st -> st{ dbFigureTitle = mempty }
+  modify $ \st -> st{ dbFigureTitle = mempty, dbFigureId = mempty }
   return res
 
 -- normalize input, consolidating adjacent Text and CRef elements
@@ -567,35 +581,42 @@ normalizeTree = everywhere (mkT go)
         go xs = xs
 
 convertEntity :: String -> String
-convertEntity e = maybe (map toUpper e) id (lookupEntity e)
+convertEntity e = Data.Maybe.fromMaybe (map toUpper e) (lookupEntity e)
 
 -- convenience function to get an attribute value, defaulting to ""
-attrValue :: String -> Element -> String
+attrValue :: String -> Element -> Text
 attrValue attr elt =
-  case lookupAttrBy (\x -> qName x == attr) (elAttribs elt) of
-    Just z  -> z
-    Nothing -> ""
+  maybe "" T.pack (lookupAttrBy (\x -> qName x == attr) (elAttribs elt))
 
 -- convenience function
-named :: String -> Element -> Bool
-named s e = qName (elName e) == s
+named :: Text -> Element -> Bool
+named s e = qName (elName e) == T.unpack s
 
 --
 
-acceptingMetadata :: PandocMonad m => DB m a -> DB m a
-acceptingMetadata p = do
-  modify (\s -> s { dbAcceptsMeta = True } )
-  res <- p
-  modify (\s -> s { dbAcceptsMeta = False })
-  return res
+addMetadataFromElement :: PandocMonad m => Element -> DB m Blocks
+addMetadataFromElement e = do
+    case filterChild (named "title") e of
+         Nothing -> return ()
+         Just z  -> do
+           getInlines z >>= addMeta "title"
+           addMetaField "subtitle" z
+    case filterChild (named "authorgroup") e of
+         Nothing -> return ()
+         Just z  -> addMetaField "author" z
+    addMetaField "subtitle" e
+    addMetaField "author" e
+    addMetaField "date" e
+    addMetaField "release" e
+    addMetaField "releaseinfo" e
+    return mempty
+  where addMetaField fieldname elt =
+            case filterChildren (named fieldname) elt of
+                   []  -> return ()
+                   [z] -> getInlines z >>= addMeta fieldname
+                   zs  -> mapM getInlines zs >>= addMeta fieldname
 
-checkInMeta :: (PandocMonad m, Monoid a) => DB m () -> DB m a
-checkInMeta p = do
-  accepts <- dbAcceptsMeta <$> get
-  when accepts p
-  return mempty
-
-addMeta :: PandocMonad m => ToMetaValue a => String -> a -> DB m ()
+addMeta :: PandocMonad m => ToMetaValue a => Text -> a -> DB m ()
 addMeta field val = modify (setMeta field val)
 
 instance HasMeta DBState where
@@ -603,25 +624,27 @@ instance HasMeta DBState where
   deleteMeta field s = s {dbMeta = deleteMeta field (dbMeta s)}
 
 isBlockElement :: Content -> Bool
-isBlockElement (Elem e) = qName (elName e) `elem` blocktags
-  where blocktags = ["toc","index","para","formalpara","simpara",
-           "ackno","epigraph","blockquote","bibliography","bibliodiv",
-           "biblioentry","glossee","glosseealso","glossary",
-           "glossdiv","glosslist","chapter","appendix","preface",
-           "bridgehead","sect1","sect2","sect3","sect4","sect5","section",
-           "refsect1","refsect2","refsect3","refsection",
-           "important","caution","note","tip","warning","qandadiv",
-           "question","answer","abstract","itemizedlist","orderedlist",
-           "variablelist","article","book","table","informaltable",
-           "informalexample", "linegroup",
-           "screen","programlisting","example","calloutlist"]
+isBlockElement (Elem e) = qName (elName e) `elem` blockTags
 isBlockElement _ = False
 
+blockTags :: [String]
+blockTags = ["toc","index","para","formalpara","simpara",
+           "ackno","epigraph","blockquote","bibliography","bibliodiv",
+           "biblioentry","glossee","glosseealso","glossary",
+           "glossdiv","glosslist","chapter","appendix","preface","bridgehead",
+           "sect1","sect2","sect3","sect4","sect5","section","simplesect",
+           "refsect1","refsect2","refsect3","refsection", "qandadiv",
+           "question","answer","abstract","itemizedlist","orderedlist",
+           "variablelist","article","book","table","informaltable",
+           "informalexample", "linegroup","procedure","substeps",
+           "screen","programlisting","example","calloutlist"] ++ admonitionTags
+
+admonitionTags :: [String]
+admonitionTags = ["important","caution","note","tip","warning"]
+
 -- Trim leading and trailing newline characters
-trimNl :: String -> String
-trimNl = reverse . go . reverse . go
-  where go ('\n':xs) = xs
-        go xs        = xs
+trimNl :: Text -> Text
+trimNl = T.dropAround (== '\n')
 
 -- meld text into beginning of first paragraph of Blocks.
 -- assumes Blocks start with a Para; if not, does nothing.
@@ -636,6 +659,8 @@ addToStart toadd bs =
 -- A DocBook mediaobject is a wrapper around a set of alternative presentations
 getMediaobject :: PandocMonad m => Element -> DB m Inlines
 getMediaobject e = do
+  figTitle <- gets dbFigureTitle
+  ident <- gets dbFigureId
   (imageUrl, attr) <-
     case filterChild (named "imageobject") e of
       Nothing  -> return (mempty, nullAttr)
@@ -648,33 +673,38 @@ getMediaobject e = do
                                    h = case atVal "depth" of
                                          "" -> []
                                          d  -> [("height", d)]
-                                   atr = (atVal "id", words $ atVal "role", w ++ h)
+                                   id' = case atVal "id" of
+                                           x | T.null x  -> ident
+                                             | otherwise -> x
+                                   cs = T.words $ atVal "role"
+                                   atr = (id', cs, w ++ h)
                                in  return (atVal "fileref", atr)
   let getCaption el = case filterChild (\x -> named "caption" x
                                             || named "textobject" x
                                             || named "alt" x) el of
                         Nothing -> return mempty
-                        Just z  -> mconcat <$> (mapM parseInline $ elContent z)
-  figTitle <- gets dbFigureTitle
-  let (caption, title) = if isNull figTitle
-                            then (getCaption e, "")
-                            else (return figTitle, "fig:")
-  liftM (imageWith attr imageUrl title) caption
+                        Just z  -> mconcat <$>
+                                         mapM parseInline (elContent z)
+  let (capt, title) = if isNull figTitle
+                         then (getCaption e, "")
+                         else (return figTitle, "fig:")
+  fmap (imageWith attr imageUrl title) capt
 
 getBlocks :: PandocMonad m => Element -> DB m Blocks
-getBlocks e =  mconcat <$> (mapM parseBlock $ elContent e)
+getBlocks e =  mconcat <$>
+                 mapM parseBlock (elContent e)
 
 
 parseBlock :: PandocMonad m => Content -> DB m Blocks
 parseBlock (Text (CData CDataRaw _ _)) = return mempty -- DOCTYPE
 parseBlock (Text (CData _ s _)) = if all isSpace s
                                      then return mempty
-                                     else return $ plain $ trimInlines $ text s
-parseBlock (CRef x) = return $ plain $ str $ map toUpper x
+                                     else return $ plain $ trimInlines $ text $ T.pack s
+parseBlock (CRef x) = return $ plain $ str $ T.toUpper $ T.pack x
 parseBlock (Elem e) =
   case qName (elName e) of
-        "toc"   -> return mempty -- skip TOC, since in pandoc it's autogenerated
-        "index" -> return mempty -- skip index, since page numbers meaningless
+        "toc"   -> skip -- skip TOC, since in pandoc it's autogenerated
+        "index" -> skip -- skip index, since page numbers meaningless
         "para"  -> parseMixed para (elContent e)
         "formalpara" -> do
            tit <- case filterChild (named "title") e of
@@ -686,18 +716,15 @@ parseBlock (Elem e) =
         "ackno"  -> parseMixed para (elContent e)
         "epigraph" -> parseBlockquote
         "blockquote" -> parseBlockquote
-        "attribution" -> return mempty
-        "titleabbrev" -> return mempty
-        "authorinitials" -> return mempty
-        "title" ->  checkInMeta getTitle
-        "author" -> checkInMeta getAuthor
-        "authorgroup" -> checkInMeta getAuthorGroup
-        "releaseinfo" -> checkInMeta (getInlines e >>= addMeta "release")
-        "date" -> checkInMeta getDate
+        "attribution" -> skip
+        "titleabbrev" -> skip
+        "authorinitials" -> skip
         "bibliography" -> sect 0
         "bibliodiv" -> sect 1
         "biblioentry" -> parseMixed para (elContent e)
         "bibliomixed" -> parseMixed para (elContent e)
+        "equation"         -> para <$> equation e displayMath
+        "informalequation" -> para <$> equation e displayMath
         "glosssee" -> para . (\ils -> text "See " <> ils <> str ".")
                          <$> getInlines e
         "glossseealso" -> para . (\ils -> text "See also " <> ils <> str ".")
@@ -707,7 +734,7 @@ parseBlock (Elem e) =
                   mapM parseGlossEntry (filterChildren (named "glossentry") e)
         "glosslist" -> definitionList <$>
                   mapM parseGlossEntry (filterChildren (named "glossentry") e)
-        "chapter" -> sect 0
+        "chapter" -> modify (\st -> st{ dbBook = True}) >> sect 0
         "appendix" -> sect 0
         "preface" -> sect 0
         "bridgehead" -> para . strong <$> getInlines e
@@ -717,23 +744,17 @@ parseBlock (Elem e) =
         "sect4" -> sect 4
         "sect5" -> sect 5
         "section" -> gets dbSectionLevel >>= sect . (+1)
+        "simplesect" ->
+          gets dbSectionLevel >>=
+          sectWith (attrValue "id" e,["unnumbered"],[]) . (+1)
         "refsect1" -> sect 1
         "refsect2" -> sect 2
         "refsect3" -> sect 3
         "refsection" -> gets dbSectionLevel >>= sect . (+1)
-        "important" -> blockQuote . (para (strong $ str "Important") <>)
-                        <$> getBlocks e
-        "caution" -> blockQuote . (para (strong $ str "Caution") <>)
-                        <$> getBlocks e
-        "note" -> blockQuote . (para (strong $ str "Note") <>)
-                        <$> getBlocks e
-        "tip" -> blockQuote . (para (strong $ str "Tip") <>)
-                        <$> getBlocks e
-        "warning" -> blockQuote . (para (strong $ str "Warning") <>)
-                        <$> getBlocks e
-        "area" -> return mempty
-        "areaset" -> return mempty
-        "areaspec" -> return mempty
+        l | l `elem` admonitionTags -> parseAdmonition $ T.pack l
+        "area" -> skip
+        "areaset" -> skip
+        "areaspec" -> skip
         "qandadiv" -> gets dbSectionLevel >>= sect . (+1)
         "question" -> addToStart (strong (str "Q:") <> str " ") <$> getBlocks e
         "answer" -> addToStart (strong (str "A:") <> str " ") <$> getBlocks e
@@ -749,33 +770,35 @@ parseBlock (Elem e) =
                                "upperroman" -> UpperRoman
                                _            -> Decimal
           let start = fromMaybe 1 $
-                      (attrValue "override" <$> filterElement (named "listitem") e)
-                       >>= safeRead
+                      filterElement (named "listitem") e
+                       >>= safeRead . attrValue "override"
           orderedListWith (start,listStyle,DefaultDelim)
             <$> listitems
         "variablelist" -> definitionList <$> deflistitems
+        "procedure" -> bulletList <$> steps
         "figure" -> getFigure e
         "mediaobject" -> para <$> getMediaobject e
-        "caption" -> return mempty
-        "info" -> metaBlock
-        "articleinfo" -> metaBlock
-        "sectioninfo" -> return mempty  -- keywords & other metadata
-        "refsectioninfo" -> return mempty  -- keywords & other metadata
-        "refsect1info" -> return mempty  -- keywords & other metadata
-        "refsect2info" -> return mempty  -- keywords & other metadata
-        "refsect3info" -> return mempty  -- keywords & other metadata
-        "sect1info" -> return mempty  -- keywords & other metadata
-        "sect2info" -> return mempty  -- keywords & other metadata
-        "sect3info" -> return mempty  -- keywords & other metadata
-        "sect4info" -> return mempty  -- keywords & other metadata
-        "sect5info" -> return mempty  -- keywords & other metadata
-        "chapterinfo" -> return mempty  -- keywords & other metadata
-        "glossaryinfo" -> return mempty  -- keywords & other metadata
-        "appendixinfo" -> return mempty  -- keywords & other metadata
-        "bookinfo" -> metaBlock
+        "caption" -> skip
+        "info" -> addMetadataFromElement e
+        "articleinfo" -> addMetadataFromElement e
+        "sectioninfo" -> skip -- keywords & other metadata
+        "refsectioninfo" -> skip -- keywords & other metadata
+        "refsect1info" -> skip -- keywords & other metadata
+        "refsect2info" -> skip -- keywords & other metadata
+        "refsect3info" -> skip -- keywords & other metadata
+        "sect1info" -> skip  -- keywords & other metadata
+        "sect2info" -> skip  -- keywords & other metadata
+        "sect3info" -> skip  -- keywords & other metadata
+        "sect4info" -> skip  -- keywords & other metadata
+        "sect5info" -> skip  -- keywords & other metadata
+        "chapterinfo" -> skip -- keywords & other metadata
+        "glossaryinfo" -> skip  -- keywords & other metadata
+        "appendixinfo" -> skip  -- keywords & other metadata
+        "bookinfo" -> addMetadataFromElement e
         "article" -> modify (\st -> st{ dbBook = False }) >>
-                           getBlocks e
-        "book" -> modify (\st -> st{ dbBook = True }) >>  getBlocks e
+                           addMetadataFromElement e >> getBlocks e
+        "book" -> modify (\st -> st{ dbBook = True }) >>
+                    addMetadataFromElement e >> getBlocks e
         "table" -> parseTable
         "informaltable" -> parseTable
         "informalexample" -> divWith ("", ["informalexample"], []) <$>
@@ -785,8 +808,14 @@ parseBlock (Elem e) =
         "screen" -> codeBlockWithLang
         "programlisting" -> codeBlockWithLang
         "?xml"  -> return mempty
-        _       -> getBlocks e
-   where parseMixed container conts = do
+        "title" -> return mempty     -- handled in parent element
+        "subtitle" -> return mempty  -- handled in parent element
+        _       -> skip >> getBlocks e
+   where skip = do
+           lift $ report $ IgnoredElement $ T.pack $ qName (elName e)
+           return mempty
+
+         parseMixed container conts = do
            let (ils,rest) = break isBlockElement conts
            ils' <- (trimInlines . mconcat) <$> mapM parseInline ils
            let p = if ils' == mempty then mempty else container ils'
@@ -798,21 +827,23 @@ parseBlock (Elem e) =
                     return $ p <> b <> x
          codeBlockWithLang = do
            let classes' = case attrValue "language" e of
-                                ""   -> []
-                                x    -> [x]
+                                "" -> []
+                                x  -> [x]
            return $ codeBlockWith (attrValue "id" e, classes', [])
-                  $ trimNl $ strContentRecursive e
+                  $ trimNl $ T.pack $ strContentRecursive e
          parseBlockquote = do
             attrib <- case filterChild (named "attribution") e of
                              Nothing  -> return mempty
                              Just z   -> (para . (str "— " <>) . mconcat)
-                                         <$> (mapM parseInline $ elContent z)
+                                         <$>
+                                              mapM parseInline (elContent z)
             contents <- getBlocks e
             return $ blockQuote (contents <> attrib)
          listitems = mapM getBlocks $ filterChildren (named "listitem") e
          callouts = mapM getBlocks $ filterChildren (named "callout") e
          deflistitems = mapM parseVarListEntry $ filterChildren
                      (named "varlistentry") e
+         steps = mapM getBlocks $ filterChildren (named "step") e
          parseVarListEntry e' = do
                      let terms = filterChildren (named "term") e'
                      let items = filterChildren (named "listitem") e'
@@ -825,24 +856,11 @@ parseBlock (Elem e) =
                      terms' <- mapM getInlines terms
                      items' <- mapM getBlocks items
                      return (mconcat $ intersperse (str "; ") terms', items')
-         getTitle =  do
-                     tit <- getInlines e
-                     subtit <-  case filterChild (named "subtitle") e of
-                                  Just s  -> (text ": " <>) <$>
-                                              getInlines s
-                                  Nothing -> return mempty
-                     addMeta "title" (tit <> subtit)
-
-         getAuthor = (:[]) <$> getInlines e >>= addMeta "author"
-         getAuthorGroup = do
-          let terms = filterChildren (named "author") e
-          mapM getInlines terms >>= addMeta "author"
-         getDate = getInlines e >>= addMeta "date"
          parseTable = do
                       let isCaption x = named "title" x || named "caption" x
-                      caption <- case filterChild isCaption e of
-                                       Just t  -> getInlines t
-                                       Nothing -> return mempty
+                      capt <- case filterChild isCaption e of
+                                    Just t  -> getInlines t
+                                    Nothing -> return mempty
                       let e' = fromMaybe e $ filterChild (named "tgroup") e
                       let isColspec x = named "colspec" x || named "col" x
                       let colspecs = case filterChild (named "colgroup") e' of
@@ -864,49 +882,68 @@ parseBlock (Elem e) =
                                                 Just "right"  -> AlignRight
                                                 Just "center" -> AlignCenter
                                                 _             -> AlignDefault
-                      let toWidth c = case findAttr (unqual "colwidth") c of
-                                                Just w -> fromMaybe 0
-                                                   $ safeRead $ '0': filter (\x ->
+                      let toWidth c = do
+                            w <- findAttr (unqual "colwidth") c
+                            n <- safeRead $ "0" <> T.filter (\x ->
                                                      (x >= '0' && x <= '9')
-                                                      || x == '.') w
-                                                Nothing -> 0 :: Double
+                                                      || x == '.') (T.pack w)
+                            if n > 0 then Just n else Nothing
                       let numrows = case bodyrows of
-                                         []   -> 0
-                                         xs   -> maximum $ map length xs
+                                         [] -> 0
+                                         xs -> maximum $ map length xs
                       let aligns = case colspecs of
-                                     []  -> replicate numrows AlignDefault
-                                     cs  -> map toAlignment cs
+                                     [] -> replicate numrows AlignDefault
+                                     cs -> map toAlignment cs
                       let widths = case colspecs of
-                                     []  -> replicate numrows 0
-                                     cs  -> let ws = map toWidth cs
-                                                tot = sum ws
-                                            in  if all (> 0) ws
-                                                   then map (/ tot) ws
-                                                   else replicate numrows 0
-                      let headrows' = if null headrows
-                                         then replicate numrows mempty
-                                         else headrows
-                      return $ table caption (zip aligns widths)
-                                 headrows' bodyrows
+                                     [] -> replicate numrows ColWidthDefault
+                                     cs -> let ws = map toWidth cs
+                                           in case sequence ws of
+                                                Just ws' -> let tot = sum ws'
+                                                            in  ColWidth . (/ tot) <$> ws'
+                                                Nothing  -> replicate numrows ColWidthDefault
+                      let toRow = Row nullAttr . map simpleCell
+                          toHeaderRow l = if null l then [] else [toRow l]
+                      return $ table (simpleCaption $ plain capt)
+                                     (zip aligns widths)
+                                     (TableHead nullAttr $ toHeaderRow headrows)
+                                     [TableBody nullAttr 0 [] $ map toRow bodyrows]
+                                     (TableFoot nullAttr [])
          isEntry x  = named "entry" x || named "td" x || named "th" x
          parseRow = mapM (parseMixed plain . elContent) . filterChildren isEntry
-         sect n = do isbook <- gets dbBook
-                     let n' = if isbook || n == 0 then n + 1 else n
-                     headerText <- case filterChild (named "title") e `mplus`
-                                        (filterChild (named "info") e >>=
-                                            filterChild (named "title")) of
-                                      Just t -> getInlines t
-                                      Nothing -> return mempty
-                     modify $ \st -> st{ dbSectionLevel = n }
-                     b <- getBlocks e
-                     let ident = attrValue "id" e
-                     modify $ \st -> st{ dbSectionLevel = n - 1 }
-                     return $ headerWith (ident,[],[]) n' headerText <> b
+         sect n = sectWith (attrValue "id" e,[],[]) n
+         sectWith attr n = do
+           isbook <- gets dbBook
+           let n' = if isbook || n == 0 then n + 1 else n
+           headerText <- case filterChild (named "title") e `mplus`
+                              (filterChild (named "info") e >>=
+                                  filterChild (named "title")) of
+                            Just t  -> getInlines t
+                            Nothing -> return mempty
+           modify $ \st -> st{ dbSectionLevel = n }
+           b <- getBlocks e
+           modify $ \st -> st{ dbSectionLevel = n - 1 }
+           return $ headerWith attr n' headerText <> b
          lineItems = mapM getInlines $ filterChildren (named "line") e
-         metaBlock = acceptingMetadata (getBlocks e) >> return mempty
+         -- | Admonitions are parsed into a div. Following other Docbook tools that output HTML,
+         -- we parse the optional title as a div with the @title@ class, and give the
+         -- block itself a class corresponding to the admonition name.
+         parseAdmonition label = do
+           -- <title> elements can be directly nested inside an admonition block, use
+           -- it if it's there. It is unclear whether we should include the label in
+           -- the title: docbook references are ambiguous on that, and some implementations of admonitions
+           -- (e.g. asciidoctor) just use an icon in all cases. To be conservative, we don't
+           -- include the label and leave it to styling.
+           title <- case filterChild (named "title") e of
+                        Just t  -> divWith ("", ["title"], []) . plain <$> getInlines t
+                        Nothing -> return mempty
+           -- this will ignore the title element if it is present
+           b <- getBlocks e
+           -- we also attach the label as a class, so it can be styled properly
+           return $ divWith (attrValue "id" e,[label],[]) (title <> b)
 
 getInlines :: PandocMonad m => Element -> DB m Inlines
-getInlines e' = (trimInlines . mconcat) <$> (mapM parseInline $ elContent e')
+getInlines e' = (trimInlines . mconcat) <$>
+                 mapM parseInline (elContent e')
 
 strContentRecursive :: Element -> String
 strContentRecursive = strContent .
@@ -917,14 +954,20 @@ elementToStr (Elem e') = Text $ CData CDataText (strContentRecursive e') Nothing
 elementToStr x = x
 
 parseInline :: PandocMonad m => Content -> DB m Inlines
-parseInline (Text (CData _ s _)) = return $ text s
+parseInline (Text (CData _ s _)) = return $ text $ T.pack s
 parseInline (CRef ref) =
-  return $ maybe (text $ map toUpper ref) (text) $ lookupEntity ref
+  return $ text $ maybe (T.toUpper $ T.pack ref) T.pack $ lookupEntity ref
 parseInline (Elem e) =
   case qName (elName e) of
-        "equation" -> equation displayMath
-        "informalequation" -> equation displayMath
-        "inlineequation" -> equation math
+        "phrase" -> do
+          let ident = attrValue "id" e
+          let classes = T.words $ attrValue "class" e
+          if ident /= "" || classes /= []
+            then spanWith (ident,classes,[]) <$> innerInlines
+            else innerInlines
+        "equation" -> equation e displayMath
+        "informalequation" -> equation e displayMath
+        "inlineequation" -> equation e math
         "subscript" -> subscript <$> innerInlines
         "superscript" -> superscript <$> innerInlines
         "inlinemediaobject" -> getMediaobject e
@@ -942,6 +985,7 @@ parseInline (Elem e) =
         "classname" -> codeWithLang
         "code" -> codeWithLang
         "filename" -> codeWithLang
+        "envar" -> codeWithLang
         "literal" -> codeWithLang
         "computeroutput" -> codeWithLang
         "prompt" -> codeWithLang
@@ -949,6 +993,8 @@ parseInline (Elem e) =
         "option" -> codeWithLang
         "optional" -> do x <- getInlines e
                          return $ str "[" <> x <> str "]"
+        "replaceable" -> do x <- getInlines e
+                            return $ str "<" <> x <> str ">"
         "markup" -> codeWithLang
         "wordasword" -> emph <$> innerInlines
         "command" -> codeWithLang
@@ -958,10 +1004,13 @@ parseInline (Elem e) =
         "symbol"  -> codeWithLang
         "constant" -> codeWithLang
         "userinput" -> codeWithLang
+        "systemitem" -> codeWithLang
         "varargs" -> return $ code "(...)"
-        "keycap" -> return (str $ strContent e)
-        "keycombo" -> keycombo <$> (mapM parseInline $ elContent e)
-        "menuchoice" -> menuchoice <$> (mapM parseInline $
+        "keycap" -> return (str $ T.pack $ strContent e)
+        "keycombo" -> keycombo <$>
+                         mapM parseInline (elContent e)
+        "menuchoice" -> menuchoice <$>
+                         mapM parseInline (
                                         filter isGuiMenu $ elContent e)
         "xref" -> do
             content <- dbContent <$> get
@@ -969,49 +1018,47 @@ parseInline (Elem e) =
             let title = case attrValue "endterm" e of
                             ""      -> maybe "???" xrefTitleByElem
                                          (findElementById linkend content)
-                            endterm -> maybe "???" strContent
+                            endterm -> maybe "???" (T.pack . strContent)
                                          (findElementById endterm content)
-            return $ link ('#' : linkend) "" (text title)
-        "email" -> return $ link ("mailto:" ++ strContent e) ""
-                          $ str $ strContent e
-        "uri" -> return $ link (strContent e) "" $ str $ strContent e
+            return $ link ("#" <> linkend) "" (text title)
+        "email" -> return $ link ("mailto:" <> T.pack (strContent e)) ""
+                          $ str $ T.pack $ strContent e
+        "uri" -> return $ link (T.pack $ strContent e) "" $ str $ T.pack $ strContent e
         "ulink" -> link (attrValue "url" e) "" <$> innerInlines
         "link" -> do
              ils <- innerInlines
              let href = case findAttr (QName "href" (Just "http://www.w3.org/1999/xlink") Nothing) e of
-                               Just h -> h
-                               _      -> ('#' : attrValue "linkend" e)
+                               Just h -> T.pack h
+                               _      -> "#" <> attrValue "linkend" e
              let ils' = if ils == mempty then str href else ils
-             let attr = (attrValue "id" e, words $ attrValue "role" e, [])
+             let attr = (attrValue "id" e, T.words $ attrValue "role" e, [])
              return $ linkWith attr href "" ils'
         "foreignphrase" -> emph <$> innerInlines
         "emphasis" -> case attrValue "role" e of
-                             "bold"   -> strong <$> innerInlines
-                             "strong" -> strong <$> innerInlines
+                             "bold"          -> strong <$> innerInlines
+                             "strong"        -> strong <$> innerInlines
                              "strikethrough" -> strikeout <$> innerInlines
-                             _        -> emph <$> innerInlines
-        "footnote" -> (note . mconcat) <$> (mapM parseBlock $ elContent e)
+                             _               -> emph <$> innerInlines
+        "footnote" -> (note . mconcat) <$>
+                         mapM parseBlock (elContent e)
         "title" -> return mempty
-        "affiliation" -> return mempty
+        "affiliation" -> skip
         -- Note: this isn't a real docbook tag; it's what we convert
         -- <?asciidor-br?> to in handleInstructions, above.  A kludge to
         -- work around xml-light's inability to parse an instruction.
         "br" -> return linebreak
-        _          -> innerInlines
-   where innerInlines = (trimInlines . mconcat) <$>
-                          (mapM parseInline $ elContent e)
-         equation constructor = return $ mconcat $
-           map (constructor . writeTeX)
-           $ rights
-           $ map (readMathML . showElement . everywhere (mkT removePrefix))
-           $ filterChildren (\x -> qName (elName x) == "math" &&
-                                   qPrefix (elName x) == Just "mml") e
-         removePrefix elname = elname { qPrefix = Nothing }
+        _          -> skip >> innerInlines
+   where skip = do
+           lift $ report $ IgnoredElement $ T.pack $ qName (elName e)
+           return mempty
+
+         innerInlines = (trimInlines . mconcat) <$>
+                          mapM parseInline (elContent e)
          codeWithLang = do
            let classes' = case attrValue "language" e of
                                "" -> []
                                l  -> [l]
-           return $ codeWith (attrValue "id" e,classes',[]) $ strContentRecursive e
+           return $ codeWith (attrValue "id" e,classes',[]) $ T.pack $ strContentRecursive e
          simpleList = (mconcat . intersperse (str "," <> space)) <$> mapM getInlines
                          (filterChildren (named "member") e)
          segmentedList = do
@@ -1041,9 +1088,10 @@ parseInline (Elem e) =
          -- if there's no such attribute, employ some heuristics based on what
          -- docbook-xsl does.
          xrefTitleByElem el
-             | not (null xrefLabel) = xrefLabel
-             | otherwise            = case qName (elName el) of
+             | not (T.null xrefLabel) = xrefLabel
+             | otherwise              = case qName (elName el) of
                   "chapter"      -> descendantContent "title" el
+                  "section"      -> descendantContent "title" el
                   "sect1"        -> descendantContent "title" el
                   "sect2"        -> descendantContent "title" el
                   "sect3"        -> descendantContent "title" el
@@ -1051,8 +1099,48 @@ parseInline (Elem e) =
                   "sect5"        -> descendantContent "title" el
                   "cmdsynopsis"  -> descendantContent "command" el
                   "funcsynopsis" -> descendantContent "function" el
-                  _              -> qName (elName el) ++ "_title"
+                  _              -> T.pack $ qName (elName el) ++ "_title"
           where
             xrefLabel = attrValue "xreflabel" el
-            descendantContent name = maybe "???" strContent
+            descendantContent name = maybe "???" (T.pack . strContent)
                                    . filterElementName (\n -> qName n == name)
+
+-- | Extract a math equation from an element
+--
+-- asciidoc can generate Latex math in CDATA sections.
+--
+-- Note that if some MathML can't be parsed it is silently ignored!
+equation
+  :: Monad m
+  => Element
+  -- ^ The element from which to extract a mathematical equation
+  -> (Text -> Inlines)
+  -- ^ A constructor for some Inlines, taking the TeX code as input
+  -> m Inlines
+equation e constructor =
+  return $ mconcat $ map constructor $ mathMLEquations <> latexEquations
+  where
+    mathMLEquations :: [Text]
+    mathMLEquations = map writeTeX $ rights $ readMath
+      (\x -> qName (elName x) == "math" && qPrefix (elName x) == Just "mml")
+      (readMathML . T.pack . showElement)
+
+    latexEquations :: [Text]
+    latexEquations = readMath (\x -> qName (elName x) == "mathphrase")
+                              (T.concat . fmap showVerbatimCData . elContent)
+
+    readMath :: (Element -> Bool) -> (Element -> b) -> [b]
+    readMath childPredicate fromElement =
+      map (fromElement . everywhere (mkT removePrefix))
+      $ filterChildren childPredicate e
+
+-- | Get the actual text stored in a CData block. 'showContent'
+-- returns the text still surrounded by the [[CDATA]] tags.
+showVerbatimCData :: Content -> Text
+showVerbatimCData (Text (CData _ d _)) = T.pack d
+showVerbatimCData c = T.pack $ showContent c
+
+
+-- | Set the prefix of a name to 'Nothing'
+removePrefix :: QName -> QName
+removePrefix elname = elname { qPrefix = Nothing }

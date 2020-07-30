@@ -1,6 +1,20 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
+{- |
+   Module      : Main
+   Copyright   : © 2016-2019 John MacFarlane <jgm@berkeley.edu>
+   License     : GNU GPL, version 2 or above
+
+   Maintainer  : John MacFarlane <jgm@berkeley.edu>
+   Stability   : alpha
+   Portability : portable
+
+Benchmarks to determine resource use of readers and writers.
+-}
+import Prelude
 import Weigh
 import Text.Pandoc
-import Data.Text (Text)
+import Data.Text (Text, unpack)
 
 main :: IO ()
 main = do
@@ -27,12 +41,10 @@ main = do
 weighWriter :: Pandoc -> String -> (Pandoc -> Text) -> Weigh ()
 weighWriter doc name writer = func (name ++ " writer") writer doc
 
-weighReader :: Pandoc -> String -> (Text -> Pandoc) -> Weigh ()
+weighReader :: Pandoc -> Text -> (Text -> Pandoc) -> Weigh ()
 weighReader doc name reader = do
   case lookup name writers of
        Just (TextWriter writer) ->
          let inp = either (error . show) id $ runPure $ writer def{ writerWrapText = WrapAuto} doc
-         in func (name ++ " reader") reader inp
+         in func (unpack $ name <> " reader") reader inp
        _ -> return () -- no writer for reader
-
-

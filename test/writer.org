@@ -92,9 +92,9 @@ E-mail style:
   Code in a block quote:
 
   #+BEGIN_EXAMPLE
-      sub status {
-          print "working";
-      }
+    sub status {
+        print "working";
+    }
   #+END_EXAMPLE
 
   A list:
@@ -127,21 +127,21 @@ And a following paragraph.
 Code:
 
 #+BEGIN_EXAMPLE
-    ---- (should be four hyphens)
+  ---- (should be four hyphens)
 
-    sub status {
-        print "working";
-    }
+  sub status {
+      print "working";
+  }
 
-    this code block is indented by one tab
+  this code block is indented by one tab
 #+END_EXAMPLE
 
 And:
 
 #+BEGIN_EXAMPLE
-        this code block is indented by two tabs
+      this code block is indented by two tabs
 
-    These should not be escaped:  \$ \\ \> \[ \{
+  These should not be escaped:  \$ \\ \> \[ \{
 #+END_EXAMPLE
 
 --------------
@@ -294,6 +294,7 @@ Same thing but with paragraphs:
    :END:
 
 2) begins with 2
+
 3) and now 3
 
    with a continuation
@@ -363,7 +364,7 @@ Multiple blocks with italics:
 - /orange/ :: orange fruit
 
   #+BEGIN_EXAMPLE
-      { orange code block }
+    { orange code block }
   #+END_EXAMPLE
 
   #+BEGIN_QUOTE
@@ -462,15 +463,15 @@ foo
 This should be a code block, though:
 
 #+BEGIN_EXAMPLE
-    <div>
-        foo
-    </div>
+  <div>
+      foo
+  </div>
 #+END_EXAMPLE
 
 As should this:
 
 #+BEGIN_EXAMPLE
-    <div>foo</div>
+  <div>foo</div>
 #+END_EXAMPLE
 
 Now, nested:
@@ -501,7 +502,7 @@ Multiline:
 Code block:
 
 #+BEGIN_EXAMPLE
-    <!-- Comment -->
+  <!-- Comment -->
 #+END_EXAMPLE
 
 Just plain comment, with trailing spaces on the line:
@@ -513,7 +514,7 @@ Just plain comment, with trailing spaces on the line:
 Code:
 
 #+BEGIN_EXAMPLE
-    <hr />
+  <hr />
 #+END_EXAMPLE
 
 Hr's:
@@ -584,7 +585,7 @@ Superscripts: a^{bc}d a^{/hello/} a^{hello there}.
 Subscripts: H_{2}O, H_{23}O, H_{many of them}O.
 
 These should not be superscripts or subscripts, because of the unescaped
-spaces: a\^b c\^d, a~b c~d.
+spaces: a^b c^d, a~b c~d.
 
 --------------
 
@@ -674,7 +675,7 @@ Backtick: `
 
 Asterisk: *
 
-Underscore: \_
+Underscore: _
 
 Left brace: {
 
@@ -724,7 +725,7 @@ Just a [[/url/][URL]].
 
 [[/url/][URL and title]]
 
-[[/url/with_underscore][with\_underscore]]
+[[/url/with_underscore][with_underscore]]
 
 [[mailto:nobody@nowhere.net][Email link]]
 
@@ -750,7 +751,7 @@ Indented [[/url][thrice]].
 This should [not][] be a link.
 
 #+BEGIN_EXAMPLE
-    [not]: /url
+  [not]: /url
 #+END_EXAMPLE
 
 Foo [[/url/][bar]].
@@ -791,7 +792,7 @@ An e-mail address: [[mailto:nobody@nowhere.net][nobody@nowhere.net]]
 Auto-links should not occur here: =<http://example.com/>=
 
 #+BEGIN_EXAMPLE
-    or here: <http://example.com/>
+  or here: <http://example.com/>
 #+END_EXAMPLE
 
 --------------
@@ -816,7 +817,7 @@ Here is a movie [[file:movie.jpg]] icon.
   :END:
 
 Here is a footnote reference,[fn:1] and another.[fn:2] This should /not/ be a
-footnote reference, because it contains a space.[\^my note] Here is an inline
+footnote reference, because it contains a space.[^my note] Here is an inline
 note.[fn:3]
 
 #+BEGIN_QUOTE
@@ -836,7 +837,7 @@ This paragraph should not be part of the note, as it is not indented.
        (as with list items).
 
        #+BEGIN_EXAMPLE
-             { <code> }
+           { <code> }
        #+END_EXAMPLE
 
        If you want, you can indent every line, but you can also be lazy and

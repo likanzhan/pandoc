@@ -2,7 +2,8 @@
 -- that is very similar to that of pandoc's HTML writer.
 -- There is one new feature: code blocks marked with class 'dot'
 -- are piped through graphviz and images are included in the HTML
--- output using 'data:' URLs.
+-- output using 'data:' URLs. The image format can be controlled
+-- via the `image_format` metadata field.
 --
 -- Invoke with: pandoc -t sample.lua
 --
@@ -11,6 +12,28 @@
 -- use it to test changes to the script.  'lua sample.lua' will
 -- produce informative error messages if your code contains
 -- syntax errors.
+
+local pipe = pandoc.pipe
+local stringify = (require "pandoc.utils").stringify
+
+-- The global variable PANDOC_DOCUMENT contains the full AST of
+-- the document which is going to be written. It can be used to
+-- configure the writer.
+local meta = PANDOC_DOCUMENT.meta
+
+-- Chose the image format based on the value of the
+-- `image_format` meta value.
+local image_format = meta.image_format
+  and stringify(meta.image_format)
+  or "png"
+local image_mime_type = ({
+    jpeg = "image/jpeg",
+    jpg = "image/jpeg",
+    gif = "image/gif",
+    png = "image/png",
+    svg = "image/svg+xml",
+  })[image_format]
+  or error("unsupported image format `" .. image_format .. "`")
 
 -- Character escaping
 local function escape(s, in_attribute)
@@ -44,19 +67,6 @@ local function attributes(attr)
   return table.concat(attr_table)
 end
 
--- Run cmd on a temporary file containing inp and return result.
-local function pipe(cmd, inp)
-  local tmp = os.tmpname()
-  local tmph = io.open(tmp, "w")
-  tmph:write(inp)
-  tmph:close()
-  local outh = io.popen(cmd .. " " .. tmp,"r")
-  local result = outh:read("*all")
-  outh:close()
-  os.remove(tmp)
-  return result
-end
-
 -- Table to store footnotes, so they can be included at the end.
 local notes = {}
 
@@ -69,8 +79,7 @@ end
 -- body is a string, metadata is a table, variables is a table.
 -- This gives you a fragment.  You could use the metadata table to
 -- fill variables in a custom lua template.  Or, pass `--template=...`
--- to pandoc, and pandoc will add do the template processing as
--- usual.
+-- to pandoc, and pandoc will do the template processing as usual.
 function Doc(body, metadata, variables)
   local buffer = {}
   local function add(s)
@@ -154,6 +163,14 @@ function DisplayMath(s)
   return "\\[" .. escape(s) .. "\\]"
 end
 
+function SingleQuoted(s)
+  return "&lsquo;" .. s .. "&rsquo;"
+end
+
+function DoubleQuoted(s)
+  return "&ldquo;" .. s .. "&rdquo;"
+end
+
 function Note(s)
   local num = #notes + 1
   -- insert the back reference right before the final closing tag.
@@ -217,8 +234,8 @@ function CodeBlock(s, attr)
   -- If code block has class 'dot', pipe the contents through dot
   -- and base64, and include the base64-encoded png as a data: URL.
   if attr.class and string.match(' ' .. attr.class .. ' ',' dot ') then
-    local png = pipe("base64", pipe("dot -Tpng", s))
-    return '<img src="data:image/png;base64,' .. png .. '"/>'
+    local img = pipe("base64", {}, pipe("dot", {"-T" .. image_format}, s))
+    return '<img src="data:' .. image_mime_type .. ';base64,' .. img .. '"/>'
   -- otherwise treat as code (one could pipe through a highlighter)
   else
     return "<pre><code" .. attributes(attr) .. ">" .. escape(s) ..
@@ -242,14 +259,12 @@ function OrderedList(items)
   return "<ol>\n" .. table.concat(buffer, "\n") .. "\n</ol>"
 end
 
--- Revisit association list STackValue instance.
 function DefinitionList(items)
   local buffer = {}
   for _,item in pairs(items) do
-    for k, v in pairs(item) do
-      table.insert(buffer,"<dt>" .. k .. "</dt>\n<dd>" ..
-                        table.concat(v,"</dd>\n<dd>") .. "</dd>")
-    end
+    local k, v = next(item)
+    table.insert(buffer, "<dt>" .. k .. "</dt>\n<dd>" ..
+                   table.concat(v, "</dd>\n<dd>") .. "</dd>")
   end
   return "<dl>\n" .. table.concat(buffer, "\n") .. "\n</dl>"
 end
@@ -288,7 +303,7 @@ function Table(caption, aligns, widths, headers, rows)
   end
   if widths and widths[1] ~= 0 then
     for _, w in pairs(widths) do
-      add('<col width="' .. string.format("%d%%", w * 100) .. '" />')
+      add('<col width="' .. string.format("%.0f%%", w * 100) .. '" />')
     end
   end
   local header_row = {}
@@ -316,7 +331,7 @@ function Table(caption, aligns, widths, headers, rows)
     end
     add('</tr>')
   end
-  add('</table')
+  add('</table>')
   return table.concat(buffer,'\n')
 end
 

@@ -1,7 +1,20 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{- |
+   Module      : Tests.Readers.RST
+   Copyright   : © 2006-2020 John MacFarlane
+   License     : GNU GPL, version 2 or above
+
+   Maintainer  : John MacFarlane <jgm@berkeley.edu>
+   Stability   : alpha
+   Portability : portable
+
+Tests for the RST reader.
+-}
 module Tests.Readers.RST (tests) where
 
+import Prelude
 import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Tasty
@@ -36,8 +49,8 @@ tests = [ "line block with blank line" =:
              , ":Parameter i: integer"
              , ":Final: item"
              , "  on two lines" ]
-             =?> ( doc
-                 $ para "para" <>
+             =?>
+              doc (para "para" <>
                    definitionList [ (str "Hostname", [para "media08"])
                                   , (text "IP address", [para "10.0.0.19"])
                                   , (str "Size", [para "3ru"])
@@ -56,10 +69,10 @@ tests = [ "line block with blank line" =:
              , ""
              , ":Version: 1"
              ]
-             =?> ( setMeta "version" (para "1")
-                 $ setMeta "title" ("Title" :: Inlines)
+             =?>
+              setMeta "version" (para "1") (setMeta "title" ("Title" :: Inlines)
                  $ setMeta "subtitle" ("Subtitle" :: Inlines)
-                 $ doc mempty )
+                 $ doc mempty)
           , "with inline markup" =: T.unlines
              [ ":*Date*: today"
              , ""
@@ -73,8 +86,8 @@ tests = [ "line block with blank line" =:
              , ".. _two: http://example.com"
              , ".. _three: http://example.org"
              ]
-             =?> ( setMeta "date" (str "today")
-                 $ doc
+             =?>
+              setMeta "date" (str "today") (doc
                  $ definitionList [ (emph "one", [para "emphasis"])
                                   , (link "http://example.com" "" "two", [para "reference"])
                                   , (link "http://example.org" "" "three", [para "another one"])
@@ -102,27 +115,25 @@ tests = [ "line block with blank line" =:
             , "  def func(x):"
             , "    return y"
             ]  =?>
-              ( doc $ codeBlockWith
+              doc (codeBlockWith
                   ( ""
-                  , ["sourceCode", "python", "numberLines", "class1", "class2", "class3"]
+                  , ["python", "numberLines", "class1", "class2", "class3"]
                   , [ ("startFrom", "34") ]
                   )
-                  "def func(x):\n  return y"
-              )
+                  "def func(x):\n  return y")
         , "Code directive with number-lines, no line specified" =: T.unlines
             [ ".. code::python"
-            , "   :number-lines: "
+            , "   :number-lines:"
             , ""
             , "  def func(x):"
             , "    return y"
             ]  =?>
-              ( doc $ codeBlockWith
+              doc (codeBlockWith
                   ( ""
-                  , ["sourceCode", "python", "numberLines"]
-                  , [ ("startFrom", "") ]
+                  , ["python", "numberLines"]
+                  , []
                   )
-                  "def func(x):\n  return y"
-              )
+                  "def func(x):\n  return y")
         , testGroup "literal / line / code blocks"
           [ "indented literal block" =: T.unlines
             [ "::"
@@ -131,7 +142,8 @@ tests = [ "line block with blank line" =:
             , ""
             , "  can go on for many lines"
             , "but must stop here"]
-            =?> (doc $
+            =?>
+              doc (
                  codeBlock "block quotes\n\ncan go on for many lines" <>
                  para "but must stop here")
           , "line block with 3 lines" =: "| a\n| b\n| c"
@@ -163,20 +175,20 @@ tests = [ "line block with blank line" =:
           [ "literal role prefix" =: ":literal:`a`" =?> para (code "a")
           , "literal role postfix" =: "`a`:literal:" =?> para (code "a")
           , "literal text" =: "``text``" =?> para (code "text")
-          , "code role" =: ":code:`a`" =?> para (codeWith ("", ["sourceCode"], []) "a")
+          , "code role" =: ":code:`a`" =?> para (codeWith ("", [], []) "a")
           , "inherited code role" =: ".. role:: codeLike(code)\n\n:codeLike:`a`"
-            =?> para (codeWith ("", ["codeLike", "sourceCode"], []) "a")
+            =?> para (codeWith ("", ["codeLike"], []) "a")
           , "custom code role with language field"
             =: ".. role:: lhs(code)\n    :language: haskell\n\n:lhs:`a`"
-            =?> para (codeWith ("", ["lhs", "haskell","sourceCode"], []) "a")
+            =?> para (codeWith ("", ["lhs", "haskell"], []) "a")
           , "custom role with unspecified parent role"
             =: ".. role:: classy\n\n:classy:`text`"
             =?> para (spanWith ("", ["classy"], []) "text")
           , "role with recursive inheritance"
             =: ".. role:: haskell(code)\n.. role:: lhs(haskell)\n\n:lhs:`text`"
-            =?> para (codeWith ("", ["lhs", "haskell", "sourceCode"], []) "text")
+            =?> para (codeWith ("", ["lhs", "haskell"], []) "text")
           , "unknown role" =: ":unknown:`text`" =?>
-              para (spanWith ("",[],[("role","unknown")]) (str "text"))
+              para (codeWith ("",["interpreted-text"],[("role","unknown")]) "text")
           ]
         , testGroup "footnotes"
           [ "remove space before note" =: T.unlines
@@ -185,6 +197,20 @@ tests = [ "line block with blank line" =:
             , ".. [1]"
             , "   bar"
             ] =?>
-            (para $ "foo" <> (note $ para "bar"))
+              para ("foo" <> note (para "bar"))
+          ]
+        , testGroup "inlines"
+          [ "links can contain an URI without being parsed twice (#4581)" =:
+            "`http://loc <http://loc>`__" =?>
+            para (link "http://loc" "" "http://loc")
+          , "inline markup cannot be nested" =:
+            "**a*b*c**" =?>
+            para (strong "a*b*c")
+          , "bare URI parsing disabled inside emphasis (#4561)" =:
+            "*http://location*" =?>
+            para (emph (text "http://location"))
+          , "include newlines" =:
+            "**before\nafter**" =?>
+            para (strong (text "before\nafter"))
           ]
         ]

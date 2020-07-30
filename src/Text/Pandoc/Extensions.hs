@@ -1,26 +1,12 @@
-{-
-Copyright (C) 2012-2017 John MacFarlane <jgm@berkeley.edu>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric      #-}
-
+{-# LANGUAGE CPP                        #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {- |
    Module      : Text.Pandoc.Extensions
-   Copyright   : Copyright (C) 2012-2017 John MacFarlane
+   Copyright   : Copyright (C) 2012-2020 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -38,6 +24,7 @@ module Text.Pandoc.Extensions ( Extension(..)
                               , enableExtension
                               , disableExtension
                               , getDefaultExtensions
+                              , getAllExtensions
                               , pandocExtensions
                               , plainExtensions
                               , strictExtensions
@@ -47,23 +34,21 @@ module Text.Pandoc.Extensions ( Extension(..)
 where
 import Data.Bits (clearBit, setBit, testBit, (.|.))
 import Data.Data (Data)
+import qualified Data.Text as T
 import Data.Typeable (Typeable)
 import GHC.Generics (Generic)
-import Text.Pandoc.Shared (safeRead)
+import Safe (readMay)
 import Text.Parsec
-import Data.Aeson (ToJSON(..), FromJSON(..),
-                   genericToEncoding, defaultOptions)
+import Data.Aeson.TH (deriveJSON, defaultOptions)
 
 newtype Extensions = Extensions Integer
   deriving (Show, Read, Eq, Ord, Data, Typeable, Generic)
 
-instance ToJSON Extensions where
-  toEncoding = genericToEncoding defaultOptions
-instance FromJSON Extensions
-
+instance Semigroup Extensions where
+  (Extensions a) <> (Extensions b) = Extensions (a .|. b)
 instance Monoid Extensions where
   mempty = Extensions 0
-  mappend (Extensions a) (Extensions b) = Extensions (a .|. b)
+  mappend = (<>)
 
 extensionsFromList :: [Extension] -> Extensions
 extensionsFromList = foldr enableExtension emptyExtensions
@@ -82,81 +67,92 @@ disableExtension x (Extensions exts) = Extensions (clearBit exts (fromEnum x))
 
 -- | Individually selectable syntax extensions.
 data Extension =
-      Ext_footnotes           -- ^ Pandoc/PHP/MMD style footnotes
-    | Ext_inline_notes        -- ^ Pandoc-style inline notes
-    | Ext_pandoc_title_block  -- ^ Pandoc title block
-    | Ext_yaml_metadata_block -- ^ YAML metadata block
-    | Ext_mmd_title_block     -- ^ Multimarkdown metadata block
-    | Ext_table_captions      -- ^ Pandoc-style table captions
-    | Ext_implicit_figures    -- ^ A paragraph with just an image is a figure
-    | Ext_simple_tables       -- ^ Pandoc-style simple tables
-    | Ext_multiline_tables    -- ^ Pandoc-style multiline tables
-    | Ext_grid_tables         -- ^ Grid tables (pandoc, reST)
-    | Ext_pipe_tables         -- ^ Pipe tables (as in PHP markdown extra)
-    | Ext_citations           -- ^ Pandoc/citeproc citations
-    | Ext_raw_tex             -- ^ Allow raw TeX (other than math)
-    | Ext_raw_html            -- ^ Allow raw HTML
-    | Ext_tex_math_dollars    -- ^ TeX math between $..$ or $$..$$
-    | Ext_tex_math_single_backslash  -- ^ TeX math btw \(..\) \[..\]
-    | Ext_tex_math_double_backslash  -- ^ TeX math btw \\(..\\) \\[..\\]
-    | Ext_latex_macros        -- ^ Parse LaTeX macro definitions (for math only)
-    | Ext_fenced_code_blocks  -- ^ Parse fenced code blocks
-    | Ext_fenced_code_attributes  -- ^ Allow attributes on fenced code blocks
-    | Ext_backtick_code_blocks    -- ^ GitHub style ``` code blocks
-    | Ext_inline_code_attributes  -- ^ Allow attributes on inline code
-    | Ext_raw_attribute           -- ^ Allow explicit raw blocks/inlines
-    | Ext_markdown_in_html_blocks -- ^ Interpret as markdown inside HTML blocks
-    | Ext_native_divs             -- ^ Use Div blocks for contents of <div> tags
-    | Ext_native_spans            -- ^ Use Span inlines for contents of <span>
-    | Ext_bracketed_spans         -- ^ Bracketed spans with attributes
-    | Ext_markdown_attribute      -- ^ Interpret text inside HTML as markdown
-                                  --   iff container has attribute 'markdown'
-    | Ext_escaped_line_breaks     -- ^ Treat a backslash at EOL as linebreak
-    | Ext_link_attributes         -- ^ link and image attributes
-    | Ext_mmd_link_attributes     -- ^ MMD style reference link attributes
-    | Ext_autolink_bare_uris  -- ^ Make all absolute URIs into links
-    | Ext_fancy_lists         -- ^ Enable fancy list numbers and delimiters
-    | Ext_lists_without_preceding_blankline -- ^ Allow lists without preceding blank
-    | Ext_four_space_rule     -- ^ Require 4-space indent for list contents
-    | Ext_startnum            -- ^ Make start number of ordered list significant
-    | Ext_definition_lists    -- ^ Definition lists as in pandoc, mmd, php
-    | Ext_compact_definition_lists  -- ^ Definition lists without
-                               -- space between items, and disallow laziness
-    | Ext_example_lists       -- ^ Markdown-style numbered examples
+      Ext_abbreviations       -- ^ PHP markdown extra abbreviation definitions
     | Ext_all_symbols_escapable  -- ^ Make all non-alphanumerics escapable
+    | Ext_amuse -- ^ Enable Text::Amuse extensions to Emacs Muse markup
     | Ext_angle_brackets_escapable  -- ^ Make < and > escapable
-    | Ext_intraword_underscores  -- ^ Treat underscore inside word as literal
+    | Ext_ascii_identifiers   -- ^ ascii-only identifiers for headers;
+                              -- presupposes Ext_auto_identifiers
+    | Ext_auto_identifiers    -- ^ Automatic identifiers for headers
+    | Ext_autolink_bare_uris  -- ^ Make all absolute URIs into links
+    | Ext_backtick_code_blocks    -- ^ GitHub style ``` code blocks
     | Ext_blank_before_blockquote -- ^ Require blank line before a blockquote
     | Ext_blank_before_header     -- ^ Require blank line before a header
-    | Ext_space_in_atx_header -- ^ Require space between # and header text
-    | Ext_strikeout           -- ^ Strikeout using ~~this~~ syntax
-    | Ext_superscript         -- ^ Superscript using ^this^ syntax
-    | Ext_subscript           -- ^ Subscript using ~this~ syntax
-    | Ext_hard_line_breaks    -- ^ All newlines become hard line breaks
-    | Ext_ignore_line_breaks  -- ^ Newlines in paragraphs are ignored
+    | Ext_bracketed_spans         -- ^ Bracketed spans with attributes
+    | Ext_citations           -- ^ Pandoc/citeproc citations
+    | Ext_compact_definition_lists  -- ^ Definition lists without space between items,
+                                    --   and disallow laziness
+    | Ext_definition_lists    -- ^ Definition lists as in pandoc, mmd, php
     | Ext_east_asian_line_breaks  -- ^ Newlines in paragraphs are ignored between
-                              -- East Asian wide characters
-    | Ext_literate_haskell    -- ^ Enable literate Haskell conventions
-    | Ext_abbreviations       -- ^ PHP markdown extra abbreviation definitions
+                                  --   East Asian wide characters. Note: this extension
+                                  --   does not affect readers/writers directly; it causes
+                                  --   the eastAsianLineBreakFilter to be applied after
+                                  --   parsing, in Text.Pandoc.App.convertWithOpts.
     | Ext_emoji               -- ^ Support emoji like :smile:
-    | Ext_auto_identifiers    -- ^ Automatic identifiers for headers
-    | Ext_gfm_auto_identifiers  -- ^ Automatic identifiers for headers,
-                                -- using GitHub's method for generating identifiers
-    | Ext_ascii_identifiers   -- ^ ascii-only identifiers for headers
-    | Ext_header_attributes   -- ^ Explicit header attributes {#id .class k=v}
-    | Ext_mmd_header_identifiers -- ^ Multimarkdown style header identifiers [myid]
-    | Ext_implicit_header_references -- ^ Implicit reference links for headers
-    | Ext_line_blocks         -- ^ RST style line blocks
+    | Ext_empty_paragraphs -- ^ Allow empty paragraphs
     | Ext_epub_html_exts      -- ^ Recognise the EPUB extended version of HTML
-    | Ext_shortcut_reference_links -- ^ Shortcut reference links
-    | Ext_smart               -- ^ "Smart" quotes, apostrophes, ellipses, dashes
+    | Ext_escaped_line_breaks     -- ^ Treat a backslash at EOL as linebreak
+    | Ext_example_lists       -- ^ Markdown-style numbered examples
+    | Ext_fancy_lists         -- ^ Enable fancy list numbers and delimiters
+    | Ext_fenced_code_attributes  -- ^ Allow attributes on fenced code blocks
+    | Ext_fenced_code_blocks  -- ^ Parse fenced code blocks
+    | Ext_fenced_divs             -- ^ Allow fenced div syntax :::
+    | Ext_footnotes           -- ^ Pandoc\/PHP\/MMD style footnotes
+    | Ext_four_space_rule     -- ^ Require 4-space indent for list contents
+    | Ext_gfm_auto_identifiers  -- ^ Use GitHub's method for generating
+                              -- header identifiers; presupposes
+                              -- Ext_auto_identifiers
+    | Ext_grid_tables         -- ^ Grid tables (pandoc, reST)
+    | Ext_hard_line_breaks    -- ^ All newlines become hard line breaks
+    | Ext_header_attributes   -- ^ Explicit header attributes {#id .class k=v}
+    | Ext_ignore_line_breaks  -- ^ Newlines in paragraphs are ignored
+    | Ext_implicit_figures    -- ^ A paragraph with just an image is a figure
+    | Ext_implicit_header_references -- ^ Implicit reference links for headers
+    | Ext_inline_code_attributes  -- ^ Allow attributes on inline code
+    | Ext_inline_notes        -- ^ Pandoc-style inline notes
+    | Ext_intraword_underscores  -- ^ Treat underscore inside word as literal
+    | Ext_latex_macros        -- ^ Parse LaTeX macro definitions (for math only)
+    | Ext_line_blocks         -- ^ RST style line blocks
+    | Ext_link_attributes         -- ^ link and image attributes
+    | Ext_lists_without_preceding_blankline -- ^ Allow lists without preceding blank
+    | Ext_literate_haskell    -- ^ Enable literate Haskell conventions
+    | Ext_markdown_attribute      -- ^ Interpret text inside HTML as markdown iff
+                                  --   container has attribute 'markdown'
+    | Ext_markdown_in_html_blocks -- ^ Interpret as markdown inside HTML blocks
+    | Ext_mmd_header_identifiers -- ^ Multimarkdown style header identifiers [myid]
+    | Ext_mmd_link_attributes     -- ^ MMD style reference link attributes
+    | Ext_mmd_title_block     -- ^ Multimarkdown metadata block
+    | Ext_multiline_tables    -- ^ Pandoc-style multiline tables
+    | Ext_native_divs             -- ^ Use Div blocks for contents of <div> tags
+    | Ext_native_spans            -- ^ Use Span inlines for contents of <span>
+    | Ext_native_numbering    -- ^ Use output format's native numbering for figures and tables
+    | Ext_ntb                 -- ^ ConTeXt Natural Tables
     | Ext_old_dashes          -- ^ -- = em, - before number = en
+    | Ext_pandoc_title_block  -- ^ Pandoc title block
+    | Ext_pipe_tables         -- ^ Pipe tables (as in PHP markdown extra)
+    | Ext_raw_attribute           -- ^ Allow explicit raw blocks/inlines
+    | Ext_raw_html            -- ^ Allow raw HTML
+    | Ext_raw_tex             -- ^ Allow raw TeX (other than math)
+    | Ext_raw_markdown        -- ^ Parse markdown in ipynb as raw markdown
+    | Ext_shortcut_reference_links -- ^ Shortcut reference links
+    | Ext_simple_tables       -- ^ Pandoc-style simple tables
+    | Ext_smart               -- ^ "Smart" quotes, apostrophes, ellipses, dashes
+    | Ext_space_in_atx_header -- ^ Require space between # and header text
     | Ext_spaced_reference_links -- ^ Allow space between two parts of ref link
+    | Ext_startnum            -- ^ Make start number of ordered list significant
+    | Ext_strikeout           -- ^ Strikeout using ~~this~~ syntax
+    | Ext_subscript           -- ^ Subscript using ~this~ syntax
+    | Ext_superscript         -- ^ Superscript using ^this^ syntax
+    | Ext_styles              -- ^ Read styles that pandoc doesn't know
+    | Ext_task_lists          -- ^ Parse certain list items as task list items
+    | Ext_table_captions      -- ^ Pandoc-style table captions
+    | Ext_tex_math_dollars    -- ^ TeX math between $..$ or $$..$$
+    | Ext_tex_math_double_backslash  -- ^ TeX math btw \\(..\\) \\[..\\]
+    | Ext_tex_math_single_backslash  -- ^ TeX math btw \(..\) \[..\]
+    | Ext_yaml_metadata_block -- ^ YAML metadata block
+    | Ext_gutenberg           -- ^ Use Project Gutenberg conventions for plain
+    | Ext_attributes          -- ^ Generic attribute syntax
     deriving (Show, Read, Enum, Eq, Ord, Bounded, Data, Typeable, Generic)
-
-instance ToJSON Extension where
-  toEncoding = genericToEncoding defaultOptions
-instance FromJSON Extension
 
 -- | Extensions to be used with pandoc-flavored markdown.
 pandocExtensions :: Extensions
@@ -183,6 +179,7 @@ pandocExtensions = extensionsFromList
   , Ext_raw_attribute
   , Ext_markdown_in_html_blocks
   , Ext_native_divs
+  , Ext_fenced_divs
   , Ext_native_spans
   , Ext_bracketed_spans
   , Ext_escaped_line_breaks
@@ -198,6 +195,7 @@ pandocExtensions = extensionsFromList
   , Ext_strikeout
   , Ext_superscript
   , Ext_subscript
+  , Ext_task_lists
   , Ext_auto_identifiers
   , Ext_header_attributes
   , Ext_link_attributes
@@ -226,7 +224,7 @@ plainExtensions = extensionsFromList
   , Ext_strikeout
   ]
 
--- | Extensions to be used with github-flavored markdown.
+-- | Extensions to be used with PHP Markdown Extra.
 phpMarkdownExtraExtensions :: Extensions
 phpMarkdownExtraExtensions = extensionsFromList
   [ Ext_footnotes
@@ -246,20 +244,17 @@ phpMarkdownExtraExtensions = extensionsFromList
 -- | Extensions to be used with github-flavored markdown.
 githubMarkdownExtensions :: Extensions
 githubMarkdownExtensions = extensionsFromList
-  [ Ext_angle_brackets_escapable
-  , Ext_pipe_tables
+  [ Ext_pipe_tables
   , Ext_raw_html
-  , Ext_fenced_code_blocks
+  , Ext_native_divs
+  , Ext_auto_identifiers
   , Ext_gfm_auto_identifiers
-  , Ext_ascii_identifiers
-  , Ext_backtick_code_blocks
   , Ext_autolink_bare_uris
-  , Ext_space_in_atx_header
-  , Ext_intraword_underscores
   , Ext_strikeout
+  , Ext_task_lists
   , Ext_emoji
-  , Ext_lists_without_preceding_blankline
-  , Ext_shortcut_reference_links
+  , Ext_fenced_code_blocks
+  , Ext_backtick_code_blocks
   ]
 
 -- | Extensions to be used with multimarkdown.
@@ -273,6 +268,7 @@ multimarkdownExtensions = extensionsFromList
   -- Note: MMD's raw TeX syntax requires raw TeX to be
   -- enclosed in HTML comment
   , Ext_tex_math_double_backslash
+  , Ext_tex_math_dollars
   , Ext_intraword_underscores
   , Ext_mmd_title_block
   , Ext_footnotes
@@ -306,20 +302,79 @@ strictExtensions = extensionsFromList
   ]
 
 -- | Default extensions from format-describing string.
-getDefaultExtensions :: String -> Extensions
-getDefaultExtensions "markdown_strict" = strictExtensions
+getDefaultExtensions :: T.Text -> Extensions
+getDefaultExtensions "markdown_strict"   = strictExtensions
 getDefaultExtensions "markdown_phpextra" = phpMarkdownExtraExtensions
-getDefaultExtensions "markdown_mmd" = multimarkdownExtensions
-getDefaultExtensions "markdown_github" = githubMarkdownExtensions
-getDefaultExtensions "markdown"        = pandocExtensions
+getDefaultExtensions "markdown_mmd"      = multimarkdownExtensions
+getDefaultExtensions "markdown_github"   = githubMarkdownExtensions <>
+  extensionsFromList
+    [ Ext_all_symbols_escapable
+    , Ext_backtick_code_blocks
+    , Ext_fenced_code_blocks
+    , Ext_space_in_atx_header
+    , Ext_intraword_underscores
+    , Ext_lists_without_preceding_blankline
+    , Ext_shortcut_reference_links
+    ]
+getDefaultExtensions "markdown"          = pandocExtensions
+getDefaultExtensions "ipynb"             =
+  extensionsFromList
+    [ Ext_all_symbols_escapable
+    , Ext_pipe_tables
+    , Ext_raw_html
+    , Ext_fenced_code_blocks
+    , Ext_auto_identifiers
+    , Ext_gfm_auto_identifiers
+    , Ext_backtick_code_blocks
+    , Ext_autolink_bare_uris
+    , Ext_space_in_atx_header
+    , Ext_intraword_underscores
+    , Ext_strikeout
+    , Ext_task_lists
+    , Ext_lists_without_preceding_blankline
+    , Ext_shortcut_reference_links
+    , Ext_tex_math_dollars
+    ]
+getDefaultExtensions "muse"            = extensionsFromList
+                                           [Ext_amuse,
+                                            Ext_auto_identifiers]
 getDefaultExtensions "plain"           = plainExtensions
 getDefaultExtensions "gfm"             = githubMarkdownExtensions
+getDefaultExtensions "commonmark"      = extensionsFromList
+                                          [Ext_raw_html]
+getDefaultExtensions "commonmark_x"    = extensionsFromList
+  [ Ext_pipe_tables
+  , Ext_raw_html
+  , Ext_auto_identifiers
+  , Ext_strikeout
+  , Ext_task_lists
+  , Ext_emoji
+  , Ext_pipe_tables
+  , Ext_raw_html
+  , Ext_raw_tex            -- only supported in writer (for math)
+  , Ext_smart
+  , Ext_tex_math_dollars
+  , Ext_superscript
+  , Ext_subscript
+  , Ext_definition_lists
+  , Ext_footnotes
+  , Ext_fancy_lists
+  , Ext_fenced_divs
+  , Ext_bracketed_spans
+  , Ext_raw_attribute
+  , Ext_implicit_header_references
+  , Ext_attributes
+  , Ext_fenced_code_blocks
+  , Ext_fenced_code_attributes
+  , Ext_backtick_code_blocks
+  ]
 getDefaultExtensions "org"             = extensionsFromList
                                           [Ext_citations,
                                            Ext_auto_identifiers]
 getDefaultExtensions "html"            = extensionsFromList
                                           [Ext_auto_identifiers,
                                            Ext_native_divs,
+                                           Ext_line_blocks,
                                            Ext_native_spans]
 getDefaultExtensions "html4"           = getDefaultExtensions "html"
 getDefaultExtensions "html5"           = getDefaultExtensions "html"
@@ -334,6 +389,10 @@ getDefaultExtensions "latex"           = extensionsFromList
                                           [Ext_smart,
                                            Ext_latex_macros,
                                            Ext_auto_identifiers]
+getDefaultExtensions "beamer"          = extensionsFromList
+                                          [Ext_smart,
+                                           Ext_latex_macros,
+                                           Ext_auto_identifiers]
 getDefaultExtensions "context"         = extensionsFromList
                                           [Ext_smart,
                                            Ext_auto_identifiers]
@@ -342,28 +401,188 @@ getDefaultExtensions "textile"         = extensionsFromList
                                            Ext_smart,
                                            Ext_raw_html,
                                            Ext_auto_identifiers]
+getDefaultExtensions "opml"            = pandocExtensions -- affects notes
 getDefaultExtensions _                 = extensionsFromList
                                           [Ext_auto_identifiers]
 
--- | Parse a format-specifying string into a markup format and a function that
--- takes Extensions and enables and disables extensions as defined in the format
--- spec.
-parseFormatSpec :: String
-                -> Either ParseError (String, Extensions -> Extensions)
+
+-- | Get all valid extensions for a format. This is used
+-- mainly in checking format specifications for validity.
+getAllExtensions :: T.Text -> Extensions
+getAllExtensions f = universalExtensions <> getAll f
+ where
+  autoIdExtensions           = extensionsFromList
+    [ Ext_auto_identifiers
+    , Ext_gfm_auto_identifiers
+    , Ext_ascii_identifiers
+    ]
+  universalExtensions        = extensionsFromList
+    [ Ext_east_asian_line_breaks ]
+  allMarkdownExtensions =
+    pandocExtensions <> autoIdExtensions <>
+      extensionsFromList
+       [ Ext_old_dashes
+       , Ext_angle_brackets_escapable
+       , Ext_lists_without_preceding_blankline
+       , Ext_four_space_rule
+       , Ext_spaced_reference_links
+       , Ext_hard_line_breaks
+       , Ext_ignore_line_breaks
+       , Ext_east_asian_line_breaks
+       , Ext_emoji
+       , Ext_tex_math_single_backslash
+       , Ext_tex_math_double_backslash
+       , Ext_markdown_attribute
+       , Ext_mmd_title_block
+       , Ext_abbreviations
+       , Ext_autolink_bare_uris
+       , Ext_mmd_link_attributes
+       , Ext_mmd_header_identifiers
+       , Ext_compact_definition_lists
+       , Ext_gutenberg
+       , Ext_smart
+       , Ext_literate_haskell
+       ]
+  getAll "markdown_strict"   = allMarkdownExtensions
+  getAll "markdown_phpextra" = allMarkdownExtensions
+  getAll "markdown_mmd"      = allMarkdownExtensions
+  getAll "markdown_github"   = allMarkdownExtensions
+  getAll "markdown"          = allMarkdownExtensions
+  getAll "ipynb"             = allMarkdownExtensions <> extensionsFromList
+    [ Ext_raw_markdown ]
+  getAll "docx"            = extensionsFromList
+    [ Ext_empty_paragraphs
+    , Ext_styles
+    ]
+  getAll "opendocument"    = extensionsFromList
+    [ Ext_empty_paragraphs
+    , Ext_native_numbering
+    ]
+  getAll "odt"             = getAll "opendocument" <> autoIdExtensions
+  getAll "muse"            = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_amuse ]
+  getAll "asciidoc"        = autoIdExtensions
+  getAll "plain"           = allMarkdownExtensions
+  getAll "gfm"             = getAll "commonmark"
+  getAll "commonmark"      =
+    autoIdExtensions <>
+    extensionsFromList
+    [ Ext_pipe_tables
+    , Ext_autolink_bare_uris
+    , Ext_strikeout
+    , Ext_task_lists
+    , Ext_emoji
+    , Ext_raw_html
+    , Ext_raw_tex            -- only supported in writer (for math)
+    , Ext_implicit_figures
+    , Ext_hard_line_breaks
+    , Ext_smart
+    , Ext_tex_math_dollars
+    , Ext_superscript
+    , Ext_subscript
+    , Ext_definition_lists
+    , Ext_footnotes
+    , Ext_fancy_lists
+    , Ext_fenced_divs
+    , Ext_bracketed_spans
+    , Ext_raw_attribute
+    , Ext_implicit_header_references
+    , Ext_attributes
+    , Ext_fenced_code_blocks
+    , Ext_fenced_code_attributes
+    , Ext_backtick_code_blocks
+    ]
+  getAll "commonmark_x"    = getAll "commonmark"
+  getAll "org"             = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_citations
+    , Ext_smart
+    ]
+  getAll "html"            = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_native_divs
+    , Ext_line_blocks
+    , Ext_native_spans
+    , Ext_empty_paragraphs
+    , Ext_raw_html
+    , Ext_raw_tex
+    , Ext_task_lists
+    , Ext_tex_math_dollars
+    , Ext_tex_math_single_backslash
+    , Ext_tex_math_double_backslash
+    , Ext_literate_haskell
+    , Ext_epub_html_exts
+    , Ext_smart
+    ]
+  getAll "html4"           = getAll "html"
+  getAll "html5"           = getAll "html"
+  getAll "epub"            = getAll "html"
+  getAll "epub2"           = getAll "epub"
+  getAll "epub3"           = getAll "epub"
+  getAll "latex"           = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_smart
+    , Ext_latex_macros
+    , Ext_raw_tex
+    , Ext_task_lists
+    , Ext_literate_haskell
+    ]
+  getAll "beamer"          = getAll "latex"
+  getAll "context"         = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_smart
+    , Ext_raw_tex
+    , Ext_ntb
+    ]
+  getAll "textile"         = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_old_dashes
+    , Ext_smart
+    , Ext_raw_tex
+    ]
+  getAll "opml"            = allMarkdownExtensions -- affects notes
+  getAll "twiki"           = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_smart ]
+  getAll "vimwiki"         = autoIdExtensions
+  getAll "dokuwiki"        = autoIdExtensions
+  getAll "tikiwiki"        = autoIdExtensions
+  getAll "rst"             = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_smart
+    , Ext_literate_haskell
+    ]
+  getAll "mediawiki"       = autoIdExtensions <>
+    extensionsFromList
+    [ Ext_smart ]
+  getAll _                 = mempty
+
+
+-- | Parse a format-specifying string into a markup format,
+-- a set of extensions to enable, and a set of extensions to disable.
+parseFormatSpec :: T.Text
+                -> Either ParseError (T.Text, [Extension], [Extension])
 parseFormatSpec = parse formatSpec ""
   where formatSpec = do
           name <- formatName
-          extMods <- many extMod
-          return (name, \x -> foldl (flip ($)) x extMods)
+          (extsToEnable, extsToDisable) <- foldl (flip ($)) ([],[]) <$>
+                                             many extMod
+          return (T.pack name, reverse extsToEnable, reverse extsToDisable)
         formatName = many1 $ noneOf "-+"
         extMod = do
           polarity <- oneOf "-+"
           name <- many $ noneOf "-+"
-          ext <- case safeRead ("Ext_" ++ name) of
+          ext <- case readMay ("Ext_" ++ name) of
                        Just n  -> return n
                        Nothing
                          | name == "lhs" -> return Ext_literate_haskell
-                         | otherwise -> fail $ "Unknown extension: " ++ name
-          return $ case polarity of
-                        '-' -> disableExtension ext
-                        _   -> enableExtension ext
+                         | otherwise -> Prelude.fail $
+                                          "Unknown extension: " ++ name
+          return $ \(extsToEnable, extsToDisable) ->
+                    case polarity of
+                        '+' -> (ext : extsToEnable, extsToDisable)
+                        _   -> (extsToEnable, ext : extsToDisable)
+
+$(deriveJSON defaultOptions ''Extension)
+$(deriveJSON defaultOptions ''Extensions)

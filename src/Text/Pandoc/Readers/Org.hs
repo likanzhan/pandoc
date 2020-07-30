@@ -1,24 +1,7 @@
-{-
-Copyright (C) 2014-2017 Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Readers.Org
-   Copyright   : Copyright (C) 2014-2017 Albert Krewinkel
+   Copyright   : Copyright (C) 2014-2020 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -31,9 +14,8 @@ import Text.Pandoc.Readers.Org.Blocks (blockList, meta)
 import Text.Pandoc.Readers.Org.ParserState (optionsToParserState)
 import Text.Pandoc.Readers.Org.Parsing (OrgParser, readWithM)
 
-import Text.Pandoc.Class (PandocMonad)
+import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
-import Text.Pandoc.Error
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing (reportLogMessages)
 import Text.Pandoc.Shared (crFilter)
@@ -42,7 +24,6 @@ import Control.Monad.Except (throwError)
 import Control.Monad.Reader (runReaderT)
 
 import Data.Text (Text)
-import qualified Data.Text as T
 
 -- | Parse org-mode string and return a Pandoc document.
 readOrg :: PandocMonad m
@@ -52,10 +33,10 @@ readOrg :: PandocMonad m
 readOrg opts s = do
   parsed <- flip runReaderT def $
             readWithM parseOrg (optionsToParserState opts)
-            (T.unpack (crFilter s) ++ "\n\n")
+            (crFilter s <> "\n\n")
   case parsed of
     Right result -> return result
-    Left  _      -> throwError $ PandocParseError "problem parsing org"
+    Left  e      -> throwError e
 
 --
 -- Parser

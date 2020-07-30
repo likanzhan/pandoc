@@ -1,24 +1,7 @@
-{-
-Copyright (C) 2014-2017 Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
--}
-
+{-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Readers.Org.BlockStarts
-   Copyright   : Copyright (C) 2014-2017 Albert Krewinkel
+   Copyright   : Copyright (C) 2014-2020 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -41,6 +24,8 @@ module Text.Pandoc.Readers.Org.BlockStarts
   ) where
 
 import Control.Monad (void)
+import Data.Text (Text)
+import qualified Data.Text as T
 import Text.Pandoc.Readers.Org.Parsing
 
 -- | Horizontal Line (five -- dashes or more)
@@ -65,56 +50,62 @@ gridTableStart :: Monad m => OrgParser m ()
 gridTableStart = try $ skipSpaces <* char '+' <* char '-'
 
 
-latexEnvStart :: Monad m => OrgParser m String
+latexEnvStart :: Monad m => OrgParser m Text
 latexEnvStart = try $
   skipSpaces *> string "\\begin{"
              *> latexEnvName
              <* string "}"
              <* blankline
  where
-   latexEnvName :: Monad m => OrgParser m String
-   latexEnvName = try $ mappend <$> many1 alphaNum <*> option "" (string "*")
+   latexEnvName :: Monad m => OrgParser m Text
+   latexEnvName = try $ mappend <$> many1Char alphaNum <*> option "" (textStr "*")
 
-
--- | Parses bullet list marker.
-bulletListStart :: Monad m => OrgParser m ()
-bulletListStart = try $
-  choice
-  [ () <$ skipSpaces  <* oneOf "+-" <* skipSpaces1
-  , () <$ skipSpaces1 <* char '*'   <* skipSpaces1
-  ]
+bulletListStart :: Monad m => OrgParser m Int
+bulletListStart = try $ do
+  ind <- length <$> many spaceChar
+   -- Unindented lists cannot use '*' bullets.
+  oneOf (if ind == 0 then "+-" else "*+-")
+  skipSpaces1 <|> lookAhead eol
+  return (ind + 1)
 
 genericListStart :: Monad m
-                 => OrgParser m String
+                 => OrgParser m Text
                  -> OrgParser m Int
-genericListStart listMarker = try $
-  (+) <$> (length <$> many spaceChar)
-      <*> (length <$> listMarker <* many1 spaceChar)
+genericListStart listMarker = try $ do
+  ind <- length <$> many spaceChar
+  void listMarker
+  skipSpaces1 <|> lookAhead eol
+  return (ind + 1)
+
+eol :: Monad m => OrgParser m ()
+eol = void (char '\n')
 
 orderedListStart :: Monad m => OrgParser m Int
 orderedListStart = genericListStart orderedListMarker
   -- Ordered list markers allowed in org-mode
-  where orderedListMarker = mappend <$> many1 digit <*> (pure <$> oneOf ".)")
+  where orderedListMarker = T.snoc <$> many1Char digit <*> oneOf ".)"
 
-drawerStart :: Monad m => OrgParser m String
+drawerStart :: Monad m => OrgParser m Text
 drawerStart = try $ skipSpaces *> drawerName <* skipSpaces <* newline
- where drawerName = char ':' *> manyTill nonspaceChar (char ':')
+ where drawerName = char ':' *> manyTillChar nonspaceChar (char ':')
 
 metaLineStart :: Monad m => OrgParser m ()
 metaLineStart = try $ skipSpaces <* string "#+"
 
 commentLineStart :: Monad m => OrgParser m ()
-commentLineStart = try $ skipSpaces <* string "# "
+commentLineStart = try $
+  -- the first char after '#' must be a plain space character or a newline
+  skipSpaces <* string "#" <* lookAhead (oneOf " \n")
 
 exampleLineStart :: Monad m => OrgParser m ()
 exampleLineStart = () <$ try (skipSpaces *> string ": ")
 
-noteMarker :: Monad m => OrgParser m String
+noteMarker :: Monad m => OrgParser m Text
 noteMarker = try $ do
   char '['
-  choice [ many1Till digit (char ']')
-         , (++) <$> string "fn:"
-                <*> many1Till (noneOf "\n\r\t ") (char ']')
+  choice [ many1TillChar digit (char ']')
+         , (<>) <$> textStr "fn:"
+                <*> many1TillChar (noneOf "\n\r\t ") (char ']')
          ]
 
 -- | Succeeds if the parser is at the end of a block.
